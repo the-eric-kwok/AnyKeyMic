@@ -7,16 +7,52 @@ struct Settings: Codable {
     let outputName: String
 }
 struct Failure: Error, CustomStringConvertible { let description: String }
+final class SbcWorker {
+    private let process = Process()
+    private let input: FileHandle
+    private let output: FileHandle
+    init() throws {
+        guard let node = ProcessInfo.processInfo.environment["ANYKEY_MIC_NODE"] ?? Self.which("node"),
+              let module = ProcessInfo.processInfo.environment["ANYKEY_MIC_SBC_MODULE"] else {
+            throw Failure(description: "蓝牙需要设置 ANYKEY_MIC_SBC_MODULE，并提供 Node.js。USB 不受影响。")
+        }
+        let script = URL(fileURLWithPath: ProcessInfo.processInfo.environment["ANYKEY_MIC_SBC_WORKER"] ?? URL(fileURLWithPath: CommandLine.arguments[0]).deletingLastPathComponent().appendingPathComponent("sbc-worker.js").path)
+        process.executableURL = URL(fileURLWithPath: node)
+        process.arguments = [script.path, module]
+        let stdin = Pipe(); let stdout = Pipe(); let stderr = Pipe()
+        process.standardInput = stdin; process.standardOutput = stdout; process.standardError = stderr
+        try process.run(); input = stdin.fileHandleForWriting; output = stdout.fileHandleForReading
+    }
+    func decode(_ frames: [[UInt8]]) throws -> [Int16] {
+        guard frames.count == 3, frames.allSatisfy({ $0.count == 23 }) else { throw Failure(description: "蓝牙音频帧长度错误。") }
+        let payload = frames.flatMap { $0 }
+        try input.write(contentsOf: Data(payload))
+        let data = try output.read(upToCount: 480) ?? Data()
+        guard data.count == 480 else { throw Failure(description: "蓝牙 SBC 解码失败或 Node 辅助进程已退出。") }
+        return stride(from: 0, to: 480, by: 2).map { Int16(bitPattern: UInt16(data[$0]) | UInt16(data[$0 + 1]) << 8) }
+    }
+    func stop() { input.closeFile(); output.closeFile(); process.terminate() }
+    private static func which(_ name: String) -> String? {
+        for dir in (ProcessInfo.processInfo.environment["Path"] ?? "").split(separator: ";") {
+            let path = URL(fileURLWithPath: String(dir)).appendingPathComponent(name + ".exe").path
+            if FileManager.default.isExecutableFile(atPath: path) { return path }
+        }
+        return nil
+    }
+}
 func nativeError() -> Failure { Failure(description: String(cString: am_error())) }
 func log(_ message: String) {
     let line = "\(ISO8601DateFormatter().string(from: Date()))  \(message)\n"
     FileHandle.standardError.write(Data(line.utf8))
 }
 func now() -> Double { ProcessInfo.processInfo.systemUptime }
-func send(_ commands: [Command]) throws {
+func send(_ commands: [Command], reportLength: Int = 64) throws {
     for command in commands {
-        let result = command.bytes.withUnsafeBufferPointer { am_hid_write($0.baseAddress, Int32($0.count)) }
-        guard result >= command.bytes.count else { throw nativeError() }
+        guard let report = command.encoded(channel: 0xf1, reportLength: reportLength) else {
+            throw Failure(description: "HID 命令长度与传输接口不匹配。")
+        }
+        let result = report.withUnsafeBufferPointer { am_hid_write($0.baseAddress, Int32($0.count)) }
+        guard result > 0 else { throw nativeError() }
     }
 }
 func isVirtual(_ name: String) -> Bool {
@@ -36,7 +72,34 @@ func printDevices() {
         let name = String(cString: am_output_name(i))
         print("\(i)\t\(name)\(isVirtual(name) ? "  ← 虚拟声卡" : "")")
     }
-    print("USB 键盘厂商接口数：\(am_hid_count())")
+    let hidCount = am_hid_count()
+    print("键盘厂商接口数：\(hidCount)")
+    for i in 0..<hidCount {
+        print("  HID[\(i)] PID：\(String(format: "%04X", am_hid_product_id(Int32(i))))，Usage：\(String(format: "%04X", am_hid_usage_page(Int32(i))))")
+    }
+}
+func probeHID(seconds: Double) throws {
+    guard am_init() == 0 else { throw nativeError() }
+    defer { am_shutdown() }
+    let count = am_hid_count()
+    guard count > 0 else { throw Failure(description: "没有找到受支持 HID 接口。") }
+    let index = (0..<count).first { am_hid_product_id($0) == 0x8243 } ?? 0
+    guard am_hid_open(index) == 0 else { throw nativeError() }
+    defer { am_hid_close() }
+    try send([Command(code: 5)], reportLength: am_hid_product_id(index) == 0x8243 ? 62 : 64)
+    let end = now() + seconds
+    var buffer = [UInt8](repeating: 0, count: 512)
+    var packets = 0
+    while now() < end {
+        let length = buffer.withUnsafeMutableBufferPointer { am_hid_read($0.baseAddress, Int32($0.count)) }
+        guard length >= 0 else { throw nativeError() }
+        if length > 0 {
+            packets += 1
+            let head = buffer.prefix(min(Int(length), 8)).map { String(format: "%02X", $0) }.joined(separator: " ")
+            print("HID[\(index)] len=\(length) head=\(head)")
+        }
+    }
+    print("探针结束：\(packets) 个报文。")
 }
 func run(settings: Settings, duration: Double?) {
     let deadline = duration.map { now() + $0 }
@@ -54,21 +117,27 @@ func run(settings: Settings, duration: Double?) {
                 throw Failure(description: "已绑定的虚拟声卡不可用，等待恢复。")
             }
             let count = am_hid_count()
-            guard count > 0 else { throw Failure(description: "等待 USB 键盘（VID 248A／PID 8102）。") }
-            let index = Int32(candidate % Int(count))
+            guard count > 0 else { throw Failure(description: "等待受支持的 HID 键盘（USB 8102 或蓝牙 8243）。") }
+            let bluetooth = (0..<count).first { am_hid_product_id($0) == 0x8243 }
+            let index: Int32
+            if let bluetooth { index = bluetooth }
+            else { index = Int32(candidate % Int(count)); candidate += 1 }
+            let reportLength = am_hid_product_id(index) == 0x8243 ? 62 : 64
             candidate += 1
             guard am_audio_open(output) == 0 else { throw nativeError() }
             guard am_hid_open(index) == 0 else { throw nativeError() }
-            defer { try? send([Command(code: 4)]) }
+            defer { try? send([Command(code: 4)], reportLength: reportLength) }
+            var sbc: SbcWorker?
+            defer { sbc?.stop() }
             var session = MicSession()
-            try send(session.start(now: now()))
+            try send(session.start(now: now()), reportLength: reportLength)
             var buffer = [UInt8](repeating: 0, count: 512)
             var samples = 0
             var peak = 0
             var dropped = 0
             var reportAt = now() + 10
             var announced = false
-            log("建立 USB 会话，输出：\(settings.outputName)")
+            log("建立 HID 会话，输出：\(settings.outputName)，麦克风常开")
             while am_should_stop() == 0 && (deadline == nil || now() < deadline!) {
                 guard am_audio_alive() != 0 else { throw Failure(description: "音频设备断开或路由变化。") }
                 let length = buffer.withUnsafeMutableBufferPointer { am_hid_read($0.baseAddress, Int32($0.count)) }
@@ -76,10 +145,16 @@ func run(settings: Settings, duration: Double?) {
                 let time = now()
                 if length > 0 {
                     let packet = Array(buffer.prefix(Int(length)))
-                    if packet.first == 0x1b {
-                        throw Failure(description: "收到私有编码音频，第一版仅支持 USB 原始 PCM。")
+                    if packet.first == 0x1b, let frames = MicProtocol.bluetoothFrames(packet) {
+                        if sbc == nil { sbc = try SbcWorker() }
+                        let pcm = try sbc!.decode(frames)
+                        let accepted = pcm.withUnsafeBufferPointer { am_audio_push($0.baseAddress, Int32($0.count)) }
+                        guard accepted >= 0 else { throw nativeError() }
+                        samples += pcm.count; dropped += pcm.count - Int(accepted)
+                        for value in pcm { peak = max(peak, abs(Int(value))) }
+                        if !announced { log("已自动开麦，蓝牙 SBC 解码正常。"); announced = true; attempt = 0; lastProblem = "" }
                     }
-                    try send(session.receive(packet, now: time))
+                    try send(session.receive(packet, now: time), reportLength: reportLength)
                     if session.isReady, let pcm = MicProtocol.pcm(packet) {
                         let accepted = pcm.withUnsafeBufferPointer { am_audio_push($0.baseAddress, Int32($0.count)) }
                         guard accepted >= 0 else { throw nativeError() }
@@ -92,7 +167,7 @@ func run(settings: Settings, duration: Double?) {
                         }
                     }
                 }
-                try send(session.tick(now: time))
+                try send(session.tick(now: time), reportLength: reportLength)
                 if session.needsReconnect { throw Failure(description: "会话或音频超时，准备重新连接。") }
                 if time >= reportAt {
                     log("最近约十秒：\(samples) 样本，峰值 \(peak)，缓冲丢弃 \(dropped) 样本。")
@@ -133,6 +208,9 @@ do {
             try JSONEncoder().encode(settings).write(to: url, options: .atomic)
             print("已绑定：\(name)\n配置：\(url.path)")
         }
+    } else if action == "probe" {
+        let seconds = arguments.count == 3 && arguments[1] == "--seconds" ? (Double(arguments[2]) ?? 10) : 10
+        try probeHID(seconds: seconds)
     } else if action == "run" {
         let duration: Double?
         if arguments.count == 1 { duration = nil }

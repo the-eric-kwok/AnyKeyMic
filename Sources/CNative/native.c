@@ -51,7 +51,10 @@ const char *am_error(void) { return last_error; }
 static struct hid_device_info *hid_at(int index) {
     if (index < 0) return NULL;
     for (struct hid_device_info *p = hid_list; p; p = p->next) {
-        if (p->vendor_id == 0x248a && p->product_id == 0x8102 && p->usage_page >= 0xff00) {
+        int known_vendor = p->vendor_id == 0x248a;
+        int bluetooth_product = p->product_id == 0x8243;
+        if ((known_vendor && (p->product_id == 0x8102 || bluetooth_product) && p->usage_page >= 0xff00) ||
+            (bluetooth_product && p->usage_page >= 0xff00)) {
             if (index-- == 0) return p;
         }
     }
@@ -73,7 +76,7 @@ int am_init(void) {
     ma_result result = ma_context_init(&backend, 1, NULL, &context);
     if (result != MA_SUCCESS) { hid_exit(); return audio_fail("Audio initialization", result); }
     initialized = 1;
-    hid_list = hid_enumerate(0x248a, 0x8102);
+    hid_list = hid_enumerate(0x248a, 0);
     ma_device_info *found = NULL;
     result = ma_context_get_devices(&context, &found, &output_count, NULL, NULL);
     if (result != MA_SUCCESS) { am_shutdown(); return audio_fail("Output enumeration", result); }
@@ -99,6 +102,11 @@ int am_hid_count(void) {
     while (hid_at(count)) ++count;
     return count;
 }
+int am_hid_product_id(int index) {
+    struct hid_device_info *p = hid_at(index);
+    return p ? (int)p->product_id : 0;
+}
+int am_hid_usage_page(int index) { struct hid_device_info *p = hid_at(index); return p ? (int)p->usage_page : 0; }
 const char *am_hid_path(int index) {
     struct hid_device_info *p = hid_at(index);
     return p ? p->path : NULL;

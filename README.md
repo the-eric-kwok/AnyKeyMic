@@ -2,7 +2,7 @@
 
 使用 Swift 和轻量 C 适配层，把 RK R87 Pro AI 的 USB 麦克风持续送入虚拟声卡。无 Electron、Node.js 或图形界面。
 
-第一版只支持 VID `248A`／PID `8102` 的 USB 原始 PCM。尚不支持 PID `8243` 和蓝牙私有编码。macOS 代码已提供，需要在 Apple Silicon 实机编译与验证。
+蓝牙支持需要 Node.js 辅助进程加载用户已安装的厂商 `mi-sbc` 模块。USB 路径仍为纯原生 PCM。macOS 代码已提供，需要在 Apple Silicon 实机编译与验证。
 
 ## 构建
 
@@ -29,6 +29,8 @@ anykey-mic run
 `2` 只是示例，必须换成设备列表中 CABLE Input／BlackHole 的序号。配置保存稳定端点 ID，而不是默认设备别名。虚拟声卡缺失时等待恢复，绝不回退系统扬声器。接收软件选择 CABLE Output／BlackHole 作为输入，系统输出继续使用扬声器或耳机，关闭“侦听此设备”。
 
 `run` 自动握手、开麦并恢复断线；Ctrl+C 停止。日志只记录连接与音量统计，不保存音频。短时测试成功后，才启用登录启动。锁屏不影响运行，睡眠期间不会收音，唤醒后重新建立会话。
+
+蓝牙运行前设置 `ANYKEY_MIC_SBC_MODULE` 指向已安装的 `mi-sbc` Node 模块，并确保 `node` 在 PATH 中；可用 `ANYKEY_MIC_SBC_WORKER` 覆盖 `sbc-worker.js` 路径。辅助进程不可用时程序会报告错误并停止蓝牙音频，不会播放压缩数据。
 
 ## 登录启动
 

@@ -8,9 +8,27 @@ public struct Command: Equatable, Sendable {
         let frame = [UInt8(0x05), 0xff, 0xf1, 0xfe, 0xc0, code, UInt8(payload.count)] + payload + [0xef]
         bytes = frame + Array(repeating: 0, count: 64 - frame.count)
     }
+
+    /// 保留 USB 默认编码，仅在发送时按 HID 通道与报告长度调整。
+    public func encoded(channel: UInt8, reportLength: Int) -> [UInt8]? {
+        guard (channel == 0xf1 && (reportLength == 62 || reportLength == 64)) ||
+              (channel == 0xf0 && reportLength == 64),
+              8 + Int(bytes[6]) <= reportLength else { return nil }
+        var report = Array(bytes.prefix(reportLength))
+        report[2] = channel
+        return report
+    }
 }
 
 public enum MicProtocol {
+    /// 蓝牙报告包含两字节报告头与三个省略固定帧头的 20 字节音频块。
+    public static func bluetoothFrames(_ bytes: [UInt8]) -> [[UInt8]]? {
+        guard bytes.count >= 62, bytes[0] == 0x1b else { return nil }
+        return stride(from: 2, to: 62, by: 20).map {
+            [0xad, 0x31, 0x0c] + Array(bytes[$0..<($0 + 20)])
+        }
+    }
+
     public static func pcm(_ bytes: [UInt8]) -> [Int16]? {
         guard bytes.count == 64, bytes[0] == 0x1c else { return nil }
         return stride(from: 4, to: 64, by: 2).map {
@@ -58,7 +76,7 @@ public struct MicSession: Sendable {
 
     public mutating func receive(_ bytes: [UInt8], now: Double) -> [Command] {
         guard phase != .idle, !needsReconnect else { return [] }
-        if MicProtocol.pcm(bytes) != nil {
+        if MicProtocol.pcm(bytes) != nil || MicProtocol.bluetoothFrames(bytes) != nil {
             if phase == .streaming { lastAudio = now; retries = 0; micOn = true; awaitingVoice = false }
             return []
         }

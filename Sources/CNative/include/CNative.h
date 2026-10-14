@@ -9,6 +9,8 @@ int am_init(void);
 void am_shutdown(void);
 const char *am_error(void);
 int am_hid_count(void);
+int am_hid_product_id(int index);
+int am_hid_usage_page(int index);
 const char *am_hid_path(int index);
 int am_hid_open(int index);
 int am_hid_read(uint8_t *data, int capacity);

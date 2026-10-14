@@ -7,6 +7,7 @@ try {
     if ($LASTEXITCODE -ne 0) { throw '无法确定产物目录。' }
     New-Item -ItemType Directory -Force -Path dist | Out-Null
     Copy-Item -LiteralPath (Join-Path $binPath 'anykey-mic.exe') -Destination dist
+    Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'sbc-worker.js') -Destination dist
     # Swift 安装器把运行时位置加入 PATH；复制对应 DLL，避免目标机器依赖全局安装。
     $runtimeDirs = $env:Path.Split(';') | Where-Object { $_ -and (Test-Path -LiteralPath (Join-Path $_ 'swiftCore.dll')) }
     if (!$runtimeDirs) { throw '未找到 swiftCore.dll，请在已加载 Swift 环境的终端运行。' }
