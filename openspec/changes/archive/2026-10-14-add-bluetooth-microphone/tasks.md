@@ -8,5 +8,6 @@
 - [x] 新增蓝牙协议测试并通过 USB 回归测试，共 11 项测试通过。
 - [x] Windows x64 Release 构建通过。
 - [x] Windows 蓝牙实机持续收音验收。
-- [ ] Windows 蓝牙断开重连验收。
+- [x] Windows 蓝牙断开重连验收。
 - [ ] macOS Apple Silicon 构建及蓝牙实机验收。
+

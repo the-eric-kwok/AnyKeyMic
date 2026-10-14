@@ -7,39 +7,6 @@ struct Settings: Codable {
     let outputName: String
 }
 struct Failure: Error, CustomStringConvertible { let description: String }
-final class SbcWorker {
-    private let process = Process()
-    private let input: FileHandle
-    private let output: FileHandle
-    init() throws {
-        guard let node = ProcessInfo.processInfo.environment["ANYKEY_MIC_NODE"] ?? Self.which("node"),
-              let module = ProcessInfo.processInfo.environment["ANYKEY_MIC_SBC_MODULE"] else {
-            throw Failure(description: "蓝牙需要设置 ANYKEY_MIC_SBC_MODULE，并提供 Node.js。USB 不受影响。")
-        }
-        let script = URL(fileURLWithPath: ProcessInfo.processInfo.environment["ANYKEY_MIC_SBC_WORKER"] ?? URL(fileURLWithPath: CommandLine.arguments[0]).deletingLastPathComponent().appendingPathComponent("sbc-worker.js").path)
-        process.executableURL = URL(fileURLWithPath: node)
-        process.arguments = [script.path, module]
-        let stdin = Pipe(); let stdout = Pipe(); let stderr = Pipe()
-        process.standardInput = stdin; process.standardOutput = stdout; process.standardError = stderr
-        try process.run(); input = stdin.fileHandleForWriting; output = stdout.fileHandleForReading
-    }
-    func decode(_ frames: [[UInt8]]) throws -> [Int16] {
-        guard frames.count == 3, frames.allSatisfy({ $0.count == 23 }) else { throw Failure(description: "蓝牙音频帧长度错误。") }
-        let payload = frames.flatMap { $0 }
-        try input.write(contentsOf: Data(payload))
-        let data = try output.read(upToCount: 480) ?? Data()
-        guard data.count == 480 else { throw Failure(description: "蓝牙 SBC 解码失败或 Node 辅助进程已退出。") }
-        return stride(from: 0, to: 480, by: 2).map { Int16(bitPattern: UInt16(data[$0]) | UInt16(data[$0 + 1]) << 8) }
-    }
-    func stop() { input.closeFile(); output.closeFile(); process.terminate() }
-    private static func which(_ name: String) -> String? {
-        for dir in (ProcessInfo.processInfo.environment["Path"] ?? "").split(separator: ";") {
-            let path = URL(fileURLWithPath: String(dir)).appendingPathComponent(name + ".exe").path
-            if FileManager.default.isExecutableFile(atPath: path) { return path }
-        }
-        return nil
-    }
-}
 func nativeError() -> Failure { Failure(description: String(cString: am_error())) }
 func log(_ message: String) {
     let line = "\(ISO8601DateFormatter().string(from: Date()))  \(message)\n"
@@ -127,8 +94,7 @@ func run(settings: Settings, duration: Double?) {
             guard am_audio_open(output) == 0 else { throw nativeError() }
             guard am_hid_open(index) == 0 else { throw nativeError() }
             defer { try? send([Command(code: 4)], reportLength: reportLength) }
-            var sbc: SbcWorker?
-            defer { sbc?.stop() }
+            var swiftSbc = MiSbcLiveDecoder()
             var session = MicSession()
             try send(session.start(now: now()), reportLength: reportLength)
             var buffer = [UInt8](repeating: 0, count: 512)
@@ -146,13 +112,12 @@ func run(settings: Settings, duration: Double?) {
                 if length > 0 {
                     let packet = Array(buffer.prefix(Int(length)))
                     if packet.first == 0x1b, let frames = MicProtocol.bluetoothFrames(packet) {
-                        if sbc == nil { sbc = try SbcWorker() }
-                        let pcm = try sbc!.decode(frames)
+                        let pcm = try swiftSbc.decode(frames)
                         let accepted = pcm.withUnsafeBufferPointer { am_audio_push($0.baseAddress, Int32($0.count)) }
                         guard accepted >= 0 else { throw nativeError() }
                         samples += pcm.count; dropped += pcm.count - Int(accepted)
                         for value in pcm { peak = max(peak, abs(Int(value))) }
-                        if !announced { log("已自动开麦，蓝牙 SBC 解码正常。"); announced = true; attempt = 0; lastProblem = "" }
+                        if !announced { log("已自动开麦，Swift SBC 解码正常。"); announced = true; attempt = 0; lastProblem = "" }
                     }
                     try send(session.receive(packet, now: time), reportLength: reportLength)
                     if session.isReady, let pcm = MicProtocol.pcm(packet) {
@@ -227,3 +192,5 @@ do {
     log(String(describing: error))
     exit(1)
 }
+
+

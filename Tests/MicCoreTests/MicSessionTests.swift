@@ -28,6 +28,116 @@ final class MicSessionTests: XCTestCase {
         XCTAssertNil(MicProtocol.bluetoothFrames(report))
     }
 
+    func testMiSbcFrameValidatesFixedProfileEnvelope() throws {
+        let bytes = MiSbcFrame.header + Array(repeating: UInt8(0x55), count: 20)
+        let frame = try MiSbcFrame(bytes)
+        XCTAssertEqual(frame.bytes.count, 23)
+        XCTAssertEqual(frame.payload.count, 20)
+        XCTAssertEqual(MiSbcFrame.sampleCount, MiSbcProfile.samplesPerFrame)
+        XCTAssertEqual(MiSbcProfile.sampleRate, 16_000)
+        XCTAssertEqual(MiSbcProfile.channels, 1)
+        XCTAssertEqual(MiSbcProfile.bitpool, 12)
+    }
+
+    func testMiSbcFrameRejectsMalformedEnvelope() {
+        XCTAssertThrowsError(try MiSbcFrame(Array(repeating: 0, count: 23))) { error in
+            XCTAssertEqual(error as? MicFrameError, .invalidHeader)
+        }
+        XCTAssertThrowsError(try MiSbcFrame(Array(repeating: 0, count: 22)))
+    }
+
+    func testMiSbcReferenceDecoderConsumesFixedProfileBitstream() throws {
+        let bytes = MiSbcFrame.header + [0, 0x11, 0x11, 0x11, 0x11] + Array(repeating: UInt8(0), count: 15)
+        let decoded = try MiSbcReferenceDecoder().decodeSubbands(try MiSbcFrame(bytes), validateCRC: false)
+        XCTAssertEqual(decoded.scaleFactors.count, 8)
+        XCTAssertEqual(decoded.samples.count, 10)
+        XCTAssertTrue(decoded.samples.allSatisfy { $0.count == 8 })
+        XCTAssertEqual(decoded.samples.flatMap { $0 }.count, 80)
+    }
+
+    func testMiSbcReferenceDecoderValidatesCapturedFramesWhenAvailable() throws {
+        let directory = ".sbc-golden"
+        let files = try FileManager.default.contentsOfDirectory(atPath: directory)
+            .filter { $0.hasPrefix("frame-") && $0.hasSuffix(".bin") }
+            .sorted()
+        guard !files.isEmpty else { return }
+
+        let decoder = MiSbcReferenceDecoder()
+        for name in files {
+            let packet = Array(try Data(contentsOf: URL(fileURLWithPath: directory).appendingPathComponent(name)))
+            XCTAssertEqual(packet.count, 69, name)
+            for index in 0..<3 {
+                let frame = try MiSbcFrame(Array(packet[index * 23..<(index + 1) * 23]))
+                let subbands = try decoder.decodeSubbands(frame, validateCRC: false)
+                XCTAssertEqual(subbands.samples.count, MiSbcProfile.blocks, name)
+                XCTAssertEqual(subbands.samples.flatMap { $0 }.count, MiSbcProfile.samplesPerFrame, name)
+            }
+        }
+        XCTAssertGreaterThanOrEqual(files.count, 1)
+    }
+
+    func testMiSbcReferenceDecoderRejectsCorruptedCRC() throws {
+        let directory = ".sbc-golden"
+        let files = try FileManager.default.contentsOfDirectory(atPath: directory)
+            .filter { $0.hasPrefix("frame-") && $0.hasSuffix(".bin") }
+            .sorted()
+        guard let name = files.first else { return }
+        var bytes = Array(try Data(contentsOf: URL(fileURLWithPath: directory).appendingPathComponent(name)).prefix(23))
+        bytes[4] ^= 0x80
+        XCTAssertThrowsError(try MiSbcReferenceDecoder().decodeSubbands(try MiSbcFrame(bytes), validateCRC: true)) { error in
+            XCTAssertEqual(error as? SBCDecoderError, .invalidCRC)
+        }
+    }
+
+    func testMiSbcLiveDecoderProducesThreeFramePCM() throws {
+        let bytes = MiSbcFrame.header + [0, 0x11, 0x11, 0x11, 0x11] + Array(repeating: UInt8(0), count: 15)
+        var decoder = MiSbcLiveDecoder()
+        let pcm = try decoder.decode([bytes, bytes, bytes])
+        XCTAssertEqual(pcm.count, 3 * MiSbcProfile.samplesPerFrame)
+    }
+    func testMiSbcSwiftOutputCanBeComparedWithGoldenPCM() throws {
+        let directory = ".sbc-golden"
+        let names = try FileManager.default.contentsOfDirectory(atPath: directory)
+            .filter { $0.hasPrefix("frame-") && $0.hasSuffix(".bin") }
+            .sorted()
+        guard !names.isEmpty else { return }
+        var decoder = MiSbcLiveDecoder()
+        var reference: [Double] = []
+        var actual: [Double] = []
+        for name in names.prefix(30) {
+            let base = URL(fileURLWithPath: directory)
+            let packet = Array(try Data(contentsOf: base.appendingPathComponent(name)))
+            let frames = stride(from: 0, to: 69, by: 23).map { Array(packet[$0..<$0 + 23]) }
+            actual.append(contentsOf: try decoder.decode(frames).map(Double.init))
+            let pcmName = name.replacingOccurrences(of: "frame-", with: "pcm-")
+            let bytes = Array(try Data(contentsOf: base.appendingPathComponent(pcmName)))
+            for index in stride(from: 0, to: bytes.count, by: 2) {
+                reference.append(Double(Int16(bitPattern: UInt16(bytes[index]) | UInt16(bytes[index + 1]) << 8)))
+            }
+        }
+        let dot = zip(actual, reference).reduce(0) { $0 + $1.0 * $1.1 }
+        let actualNorm = sqrt(actual.reduce(0) { $0 + $1 * $1 })
+        let referenceNorm = sqrt(reference.reduce(0) { $0 + $1 * $1 })
+        let correlation = dot / max(actualNorm * referenceNorm, 1)
+        let rmsRatio = actualNorm / max(referenceNorm, 1)
+        XCTAssertGreaterThan(correlation, 0.999)
+        XCTAssertGreaterThan(rmsRatio, 0.99)
+        XCTAssertLessThan(rmsRatio, 1.01)
+        print("Swift golden correlation: \(correlation), RMS ratio: \(rmsRatio)")
+    }
+
+    func testMiSbcSynthesisProducesStableZeroFrame() throws {
+        let subbands = MiSbcSubbandFrame(
+            scaleFactors: Array(repeating: 0, count: MiSbcProfile.subbands),
+            samples: Array(repeating: Array(repeating: 0, count: MiSbcProfile.subbands), count: MiSbcProfile.blocks)
+        )
+        var filter = MiSbcSynthesisFilter()
+        XCTAssertEqual(filter.synthesize(subbands), Array(repeating: 0, count: MiSbcProfile.samplesPerFrame))
+        XCTAssertEqual(filter.synthesize(subbands).count, MiSbcProfile.samplesPerFrame)
+        filter.reset()
+        XCTAssertEqual(filter.synthesize(subbands).max(), 0)
+    }
+
     func testBluetoothAudioKeepsSessionAlive() {
         var session = streamingSession()
         var report = Array(repeating: UInt8(0), count: 62)
@@ -151,3 +261,9 @@ final class MicSessionTests: XCTestCase {
         XCTAssertFalse(session.needsReconnect)
     }
 }
+
+
+
+
+
+

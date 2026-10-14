@@ -3,3 +3,4 @@
 .native-check/
 dist/
 *.log
+.sbc-golden/

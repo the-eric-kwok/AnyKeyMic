@@ -2,7 +2,7 @@
 
 使用 Swift 和轻量 C 适配层，把 RK R87 Pro AI 的 USB 麦克风持续送入虚拟声卡。无 Electron、Node.js 或图形界面。
 
-蓝牙支持需要 Node.js 辅助进程加载用户已安装的厂商 `mi-sbc` 模块。USB 路径仍为纯原生 PCM。macOS 代码已提供，需要在 Apple Silicon 实机编译与验证。
+蓝牙和 USB 路径均使用纯 Swift／C 原生实现，不依赖 Node.js、Electron 或厂商解码器。macOS 代码已提供，需要在 Apple Silicon 实机编译与验证。
 
 ## 构建
 
@@ -30,7 +30,9 @@ anykey-mic run
 
 `run` 自动握手、开麦并恢复断线；Ctrl+C 停止。日志只记录连接与音量统计，不保存音频。短时测试成功后，才启用登录启动。锁屏不影响运行，睡眠期间不会收音，唤醒后重新建立会话。
 
-蓝牙运行前设置 `ANYKEY_MIC_SBC_MODULE` 指向已安装的 `mi-sbc` Node 模块，并确保 `node` 在 PATH 中；可用 `ANYKEY_MIC_SBC_WORKER` 覆盖 `sbc-worker.js` 路径。辅助进程不可用时程序会报告错误并停止蓝牙音频，不会播放压缩数据。
+蓝牙解码器已经内置在 Swift 主程序中，运行时不需要 Node.js、N-API、厂商 `.node` 文件或额外环境变量。历史 golden 数据只用于开发期回归测试，保存在本机 `.sbc-golden` 目录，默认被 Git 忽略。
+
+
 
 ## 登录启动
 
@@ -47,3 +49,5 @@ macOS：构建并完成 `configure` 后运行 `sh scripts/login-macos.sh`，安�
 ## 来源与限制
 
 协议依据 anykey-ai 固定提交 `ea7116d32197f4bf2772d2ed20af8f4a1cdcc43b` 的 `src/main/kb-session.js`、`src/main/mic.js` 和 `docs/protocol.md`。保留其 MIT 版权声明。没有复制其 `vendor/mi-hid` 或 `vendor/mi-sbc` 二进制。详见 THIRD_PARTY.md。
+
+

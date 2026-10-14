@@ -25,4 +25,5 @@ USB 桥接已通过用户实机验收。用户需要键盘通过蓝牙连接时�
 
 ## 状态
 
-协议和程序实现已完成，Windows x64 Release 构建及 11 项自动化测试已通过，Windows 蓝牙实机已确认持续收音并有电平波动。蓝牙断线恢复与 macOS Apple Silicon 实机仍待验收；运行蓝牙前需要通过 `ANYKEY_MIC_SBC_MODULE` 提供用户本机的 `mi-sbc` 模块路径。
+协议和程序实现已完成，Windows x64 Release 构建及 11 项自动化测试已通过，Windows 蓝牙实机已确认持续收音并有电平波动。蓝牙断线恢复已完成 Windows 实机验收；macOS Apple Silicon 实机仍待验收。蓝牙解码已内置于 Swift 主程序，不需要 Node.js 或用户提供厂商模块。
+

@@ -47,6 +47,26 @@ public enum MicProtocol {
     }
 }
 
+public struct MiSbcFrame: Equatable, Sendable {
+    public static let length = 23
+    public static let sampleCount = 80
+    public static let header: [UInt8] = [0xad, 0x31, 0x0c]
+    public let bytes: [UInt8]
+
+    public init(_ bytes: [UInt8]) throws {
+        guard bytes.count == Self.length, Array(bytes.prefix(3)) == Self.header else {
+            throw MicFrameError.invalidHeader
+        }
+        self.bytes = bytes
+    }
+
+    public var payload: ArraySlice<UInt8> { bytes[3..<Self.length] }
+}
+
+public enum MicFrameError: Error, Equatable {
+    case invalidHeader
+}
+
 /// 调用方提供单调递增的秒数，并在 needsReconnect 后关闭句柄、重新枚举。
 public struct MicSession: Sendable {
     private enum Phase: Sendable { case idle, heartbeat, verify, open, voice, streaming }
