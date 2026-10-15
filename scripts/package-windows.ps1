@@ -1,9 +1,9 @@
 $ErrorActionPreference = 'Stop'
 Push-Location (Join-Path $PSScriptRoot '..')
 try {
-    swift build -c release
+    swift build -c release --scratch-path build
     if ($LASTEXITCODE -ne 0) { throw 'Swift build failed.' }
-    $binPath = (swift build -c release --show-bin-path | Select-Object -Last 1).Trim()
+    $binPath = (swift build -c release --scratch-path build --show-bin-path | Select-Object -Last 1).Trim()
     if ($LASTEXITCODE -ne 0) { throw 'Cannot determine binary directory.' }
     New-Item -ItemType Directory -Force -Path dist | Out-Null
     Copy-Item -LiteralPath (Join-Path $binPath 'anykey-mic.exe') -Destination dist

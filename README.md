@@ -9,15 +9,15 @@
 Windows x64 需要 Swift 6 工具链、Visual Studio C++ 构建工具和 Windows SDK。macOS 需要 Swift 6／Xcode 命令行工具。依赖源码已固定在仓库中，构建不会执行 git 或下载 Swift 包。
 
 ```shell
-swift test
-swift build -c release
+swift test --scratch-path build
+swift build -c release --scratch-path build
 ```
 
 HIDAPI 0.14.0 负责非独占 HID，miniaudio 0.11.21 负责 WASAPI／Core Audio 输出和格式转换。协议状态机由 Swift 实现。程序固定请求 16 kHz 单声道 Int16，设备所需重采样由音频后端完成。
 
 ## 首次运行
 
-先退出 AnyKey AI 和官方 RK-AI，避免多个进程争用设备。安装 VB-CABLE（Windows）或 BlackHole（macOS）。运行产物通常位于 `.build/release`，Windows 可用 `swift build -c release --show-bin-path` 获取准确目录。
+先退出 AnyKey AI 和官方 RK-AI，避免多个进程争用设备。安装 VB-CABLE（Windows）或 BlackHole（macOS）。运行产物位于 `build/release`，Windows 可用 `swift build -c release --scratch-path build --show-bin-path` 获取准确目录。
 
 ```shell
 anykey-mic devices

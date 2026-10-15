@@ -9,10 +9,10 @@ if (!$vs) { throw '需要 Visual Studio C++ 构建工具。' }
 Push-Location (Join-Path $PSScriptRoot '..')
 try {
     switch ($Action) {
-        test { swift test }
-        build { swift build }
-        release { swift build -c release }
-        devices { swift run anykey-mic devices }
+        test { swift test --scratch-path build }
+        build { swift build --scratch-path build }
+        release { swift build -c release --scratch-path build }
+        devices { swift run --scratch-path build anykey-mic devices }
     }
     if ($LASTEXITCODE -ne 0) { throw "Swift 命令失败：$LASTEXITCODE" }
 } finally { Pop-Location }
