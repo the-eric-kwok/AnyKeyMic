@@ -8,14 +8,18 @@ if [ "${1:-}" = "--remove" ]; then
     exit 0
 fi
 root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
-binary="$root/.build/release/anykey-mic"
-test -x "$binary" || { echo '请先执行 swift build -c release。'; exit 1; }
+bin_dir=$(swift build -c release --scratch-path build --show-bin-path | tail -n 1)
+source_binary="$bin_dir/anykey-mic"
+test -x "$source_binary" || { echo '请先执行 swift build -c release --scratch-path build。'; exit 1; }
+binary="$HOME/Library/Application Support/AnyKeyMic/anykey-mic"
+mkdir -p "$(dirname "$binary")"
+cp "$source_binary" "$binary"
 mkdir -p "$HOME/Library/LaunchAgents" "$HOME/Library/Logs/AnyKeyMic"
 # 使用 plutil 设置字符串，正确处理路径内的 XML 特殊字符。
 plutil -create xml1 "$plist"
 plutil -insert Label -string "$label" "$plist"
-plutil -insert ProgramArguments -json '["placeholder","run"]' "$plist"
-plutil -replace ProgramArguments.0 -string "$binary" "$plist"
+plutil -insert ProgramArguments -json '["run"]' "$plist"
+plutil -insert ProgramArguments.0 -string "$binary" "$plist"
 plutil -insert RunAtLoad -bool YES "$plist"
 plutil -insert KeepAlive -bool YES "$plist"
 plutil -insert ThrottleInterval -integer 15 "$plist"
