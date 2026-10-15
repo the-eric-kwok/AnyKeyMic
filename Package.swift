@@ -18,6 +18,7 @@ let package = Package(
                 .linkedLibrary("advapi32", .when(platforms: [.windows])),
                 .linkedLibrary("shell32", .when(platforms: [.windows])),
                 .linkedFramework("IOKit", .when(platforms: [.macOS])),
+                .linkedFramework("AppKit", .when(platforms: [.macOS])),
                 .linkedFramework("CoreFoundation", .when(platforms: [.macOS])),
                 .linkedFramework("CoreAudio", .when(platforms: [.macOS])),
                 .linkedFramework("AudioToolbox", .when(platforms: [.macOS]))
