@@ -36,9 +36,33 @@ anykey-mic run
 
 ## 登录启动
 
-Windows：先运行 `scripts/package-windows.ps1`，再运行 `scripts/login-windows.ps1`。脚本创建当前用户启动项；下次登录以隐藏窗口启动。移除使用 `scripts/login-windows.ps1 -Remove`。运行日志位于 `%LOCALAPPDATA%/AnyKeyMic/run.log`。首次测试可直接运行 `dist/anykey-mic.exe run`。隐藏实例可通过任务管理器结束；强制终止不能保证停麦命令送达。
+Windows：先运行 `scripts/package-windows.ps1`，再使用管理脚本安装当前用户登录自启：
 
-macOS：构建并完成 `configure` 后运行 `sh scripts/login-macos.sh`，安装并启动当前用户 LaunchAgent。移除使用 `sh scripts/login-macos.sh --remove`。日志位于 `~/Library/Logs/AnyKeyMic/run.log`。
+```powershell
+.\scripts\login-windows.ps1 install
+.\scripts\login-windows.ps1 status
+.\scripts\login-windows.ps1 start
+.\scripts\login-windows.ps1 stop
+.\scripts\login-windows.ps1 restart
+.\scripts\login-windows.ps1 uninstall
+```
+
+脚本通过当前用户的启动文件夹创建启动项，并以隐藏窗口运行。运行日志位于 `%LOCALAPPDATA%/AnyKeyMic/run.log`。也兼容旧用法 `-Remove`。首次测试可直接运行 `dist/anykey-mic.exe run`。
+
+macOS：构建并完成 `configure` 后运行：
+
+```shell
+sh scripts/login-macos.sh install
+sh scripts/login-macos.sh status
+sh scripts/login-macos.sh start
+sh scripts/login-macos.sh stop
+sh scripts/login-macos.sh restart
+sh scripts/login-macos.sh uninstall
+```
+
+脚本安装并管理当前用户 LaunchAgent。`uninstall` 会保留配置、运行文件和日志。日志位于 `~/Library/Logs/AnyKeyMic/run.log`。
+
+以上均为当前用户登录自启，不是系统级服务，不需要管理员权限。Windows 卸载会强制停止匹配安装路径的进程，无法保证停麦命令送达；macOS 停止会卸载当前 LaunchAgent，但保留登录启动配置，下次登录仍会启动。安装会立即启动程序，请先完成 configure 和短时收音测试。Windows 启动项依赖当前仓库中的 scripts 和 dist，移动目录后需要重新安装；更新打包前先执行 stop。
 
 暂未配置日志轮转，长期部署前需要留意日志大小。不要同时运行两个桥接程序。
 
@@ -49,5 +73,3 @@ macOS：构建并完成 `configure` 后运行 `sh scripts/login-macos.sh`，安�
 ## 来源与限制
 
 协议依据 anykey-ai 固定提交 `ea7116d32197f4bf2772d2ed20af8f4a1cdcc43b` 的 `src/main/kb-session.js`、`src/main/mic.js` 和 `docs/protocol.md`。保留其 MIT 版权声明。没有复制其 `vendor/mi-hid` 或 `vendor/mi-sbc` 二进制。详见 THIRD_PARTY.md。
-
-
