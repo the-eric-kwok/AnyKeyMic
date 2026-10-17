@@ -819,14 +819,16 @@ struct hid_device_info HID_API_EXPORT * HID_API_CALL hid_enumerate(unsigned shor
 
 		/* Get the Vendor ID and Product ID for this device. */
 		attrib.Size = sizeof(HIDD_ATTRIBUTES);
-		if (!HidD_GetAttributes(device_handle, &attrib)) {
-			goto cont_close;
-		}
+		BOOL attributes_ok = HidD_GetAttributes(device_handle, &attrib);
+		BOOL bluetooth_vendor_path = wcsstr(device_interface, L"8243") != NULL &&
+			wcsstr(device_interface, L"col02") != NULL;
+		if (!attributes_ok && !bluetooth_vendor_path) goto cont_close;
 
 		/* Check the VID/PID to see if we should add this
 		   device to the enumeration list. */
-		if ((vendor_id == 0x0 || attrib.VendorID == vendor_id) &&
-		    (product_id == 0x0 || attrib.ProductID == product_id)) {
+		if (bluetooth_vendor_path ||
+			((vendor_id == 0x0 || attrib.VendorID == vendor_id) &&
+		    (product_id == 0x0 || attrib.ProductID == product_id))) {
 
 			/* VID/PID match. Create the record. */
 			struct hid_device_info *tmp = hid_internal_get_device_info(device_interface, device_handle);
