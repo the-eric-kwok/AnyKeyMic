@@ -249,6 +249,82 @@ final class MicSessionTests: XCTestCase {
         XCTAssertFalse(session.isReady)
     }
 
+    private func aiKey(_ value: UInt8) -> [UInt8] { Command(code: 0x9f, payload: [value]).bytes }
+
+    func testHoldingAIKeyStreamsOnlyWhilePressed() {
+        var session = MicSession(pushToTalk: true)
+        _ = session.start(now: 0)
+        _ = session.receive(reply(104), now: 0.1)
+        _ = session.receive(reply(227), now: 0.2)
+        _ = session.tick(now: 0.4)
+        XCTAssertFalse(codes(session.tick(now: 0.6)).contains(3))
+        XCTAssertTrue(session.isReady)
+        XCTAssertTrue(session.receive(aiKey(0x42), now: 0.7).isEmpty)
+        XCTAssertEqual(codes(session.receive(aiKey(0x33), now: 0.8)), [3])
+        XCTAssertTrue(session.receive(aiKey(0x33), now: 0.9).isEmpty)
+        XCTAssertTrue(session.micEnabled)
+        XCTAssertEqual(codes(session.receive(aiKey(0x42), now: 1)), [4])
+        XCTAssertFalse(session.micEnabled)
+        XCTAssertTrue(session.receive(reply(107), now: 1.1).isEmpty)
+        _ = session.receive(reply(104), now: 3.5)
+        XCTAssertFalse(codes(session.tick(now: 3.5)).contains(3))
+        XCTAssertFalse(session.needsReconnect)
+    }
+
+    func testTypingStopsPushToTalkWhenReleaseIsLost() {
+        var session = MicSession(pushToTalk: true)
+        _ = session.start(now: 0)
+        _ = session.receive(reply(104), now: 0.1)
+        _ = session.receive(reply(227), now: 0.2)
+        _ = session.tick(now: 0.4)
+        _ = session.tick(now: 0.6)
+        _ = session.receive(aiKey(0x33), now: 1)
+        var key = Array(repeating: UInt8(0), count: 62)
+        key[0] = 0x02
+        XCTAssertTrue(session.receive(key, now: 2).isEmpty)
+        key[1] = 0x10
+        XCTAssertTrue(session.receive(key, now: 2.05).isEmpty)
+        XCTAssertTrue(session.micEnabled)
+        XCTAssertEqual(session.lastTrigger, .aiPressed)
+        key[1] = 0x01
+        XCTAssertEqual(codes(session.receive(key, now: 2.06)), [4])
+        XCTAssertEqual(session.lastTrigger, .keyPressed(report: Array(key.prefix(9))))
+        _ = session.receive(aiKey(0x33), now: 2.07)
+        key[1] = 0
+        key[3] = 0x04
+        XCTAssertEqual(codes(session.receive(key, now: 2.1)), [4])
+        XCTAssertFalse(session.micEnabled)
+        XCTAssertEqual(session.lastTrigger, .keyPressed(report: Array(key.prefix(9))))
+        XCTAssertTrue(session.receive(key, now: 2.2).isEmpty)
+    }
+
+    func testAIKeyReleaseIsReportedSeparately() {
+        var session = MicSession(pushToTalk: true)
+        _ = session.start(now: 0)
+        _ = session.receive(aiKey(0x33), now: 0.1)
+        _ = session.receive(aiKey(0x42), now: 0.2)
+        XCTAssertEqual(session.lastTrigger, .aiReleased)
+    }
+
+    func testAlwaysOnIgnoresAIKeyAndTyping() {
+        var session = streamingSession()
+        var key = Array(repeating: UInt8(0), count: 62)
+        key[0] = 0x02; key[3] = 0x04
+        XCTAssertTrue(session.receive(Command(code: 0x9f, payload: [0x42]).bytes, now: 1).isEmpty)
+        XCTAssertTrue(session.receive(key, now: 1.1).isEmpty)
+        XCTAssertTrue(session.micEnabled)
+    }
+
+    func testPressDuringHandshakeOpensMicWhenReady() {
+        var session = MicSession(pushToTalk: true)
+        _ = session.start(now: 0)
+        XCTAssertTrue(session.receive(aiKey(0x33), now: 0.05).isEmpty)
+        _ = session.receive(reply(104), now: 0.1)
+        _ = session.receive(reply(227), now: 0.2)
+        _ = session.tick(now: 0.4)
+        XCTAssertEqual(codes(session.tick(now: 0.6)), [3])
+    }
+
     func testAudioEndingAllowsHeartbeatRecoveryBeforeDisconnect() {
         var session = streamingSession()
         var pcm = Array(repeating: UInt8(0), count: 64)

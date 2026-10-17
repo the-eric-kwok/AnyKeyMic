@@ -45,6 +45,23 @@ public enum MicProtocol {
         guard end < bytes.count, bytes[end] == 0xef else { return nil }
         return bytes[5]
     }
+
+    /// AI 键按下上报 9F/33，松开上报 9F/42；其他报告返回 nil。
+    static func aiKeyPressed(_ bytes: [UInt8]) -> Bool? {
+        guard command(bytes) == 0x9f, bytes[6] == 1 else { return nil }
+        switch bytes[7] {
+        case 0x33: return true
+        case 0x42: return false
+        default: return nil
+        }
+    }
+
+    /// 蓝牙下厂商接口也会收到报告编号 02 的标准键盘报告：修饰键、保留字节、六个键码。
+    /// 单独按住右 Ctrl 不算打字，它常被设为输入法语音热键。
+    static func isKeyDown(_ bytes: [UInt8]) -> Bool {
+        guard bytes.count >= 9, bytes[0] == 0x02 else { return false }
+        return bytes[1] & ~0x10 != 0 || bytes[3...8].contains { $0 != 0 }
+    }
 }
 
 public struct MiSbcFrame: Equatable, Sendable {
@@ -67,9 +84,14 @@ public enum MicFrameError: Error, Equatable {
     case invalidHeader
 }
 
+public enum MicTrigger: Equatable, Sendable {
+    case aiPressed, aiReleased
+    case keyPressed(report: [UInt8])
+}
+
 /// 调用方提供单调递增的秒数，并在 needsReconnect 后关闭句柄、重新枚举。
 public struct MicSession: Sendable {
-    private enum Phase: Sendable { case idle, heartbeat, verify, open, voice, streaming }
+    private enum Phase: Sendable { case idle, heartbeat, verify, open, voice, streaming, paused }
     private var phase: Phase = .idle
     private var started = 0.0
     private var due = 0.0
@@ -82,11 +104,18 @@ public struct MicSession: Sendable {
     private var awaitingVoice = false
     public private(set) var needsReconnect = false
     public private(set) var isReady = false
+    public private(set) var micEnabled: Bool
+    public private(set) var lastTrigger: MicTrigger?
+    private let pushToTalk: Bool
 
-    public init() {}
+    /// pushToTalk 为真时启动即停麦，按住 AI 键才推流；否则麦克风常开。
+    public init(pushToTalk: Bool = false) {
+        self.pushToTalk = pushToTalk
+        micEnabled = !pushToTalk
+    }
 
     public mutating func start(now: Double) -> [Command] {
-        self = MicSession()
+        self = MicSession(pushToTalk: pushToTalk)
         phase = .heartbeat
         started = now
         lastHeartbeat = now
@@ -100,6 +129,15 @@ public struct MicSession: Sendable {
             if phase == .streaming { lastAudio = now; retries = 0; micOn = true; awaitingVoice = false }
             return []
         }
+        if pushToTalk {
+            if let pressed = MicProtocol.aiKeyPressed(bytes) {
+                return setMic(pressed, trigger: pressed ? .aiPressed : .aiReleased, now: now)
+            }
+            // 推流挤占链路时 AI 键松开报告可能丢失，打字即可证明已松开。
+            if micEnabled, MicProtocol.isKeyDown(bytes) {
+                return setMic(false, trigger: .keyPressed(report: Array(bytes.prefix(9))), now: now)
+            }
+        }
         guard let code = MicProtocol.command(bytes) else { return [] }
         if code == 104 {
             lastReply = now
@@ -111,7 +149,7 @@ public struct MicSession: Sendable {
             phase = .open
             due = now + 0.15
             return [Command(code: 17)]
-        } else if code == 106 {
+        } else if code == 106, micEnabled {
             // 只在固件自开麦边沿应答，避免每次 106 都发 3 形成回包风暴。
             let spontaneous = !micOn && !awaitingVoice
             micOn = true
@@ -145,11 +183,15 @@ public struct MicSession: Sendable {
             phase = .voice
             due = now + 0.15
         } else if phase == .voice, now >= due {
-            result.append(Command(code: 3))
-            phase = .streaming
             isReady = true
-            lastVoice = now
-            awaitingVoice = true
+            if micEnabled {
+                result.append(Command(code: 3))
+                phase = .streaming
+                lastVoice = now
+                awaitingVoice = true
+            } else {
+                phase = .paused
+            }
         } else if phase == .streaming, !audioActive, now - lastVoice >= 2 {
             if retries >= 2 {
                 needsReconnect = true
@@ -166,5 +208,27 @@ public struct MicSession: Sendable {
             result.append(Command(code: 5))
         }
         return result
+    }
+
+    private mutating func setMic(_ enabled: Bool, trigger: MicTrigger, now: Double) -> [Command] {
+        if enabled != micEnabled { lastTrigger = trigger }
+        micEnabled = enabled
+        if micEnabled, phase == .paused {
+            phase = .streaming
+            retries = 0
+            lastVoice = now
+            awaitingVoice = true
+            return [Command(code: 3)]
+        }
+        if !micEnabled, phase == .streaming {
+            // 停麦后仍靠心跳回包判活，从停麦时刻起算超时。
+            phase = .paused
+            micOn = false
+            awaitingVoice = false
+            lastAudio = nil
+            lastReply = now
+            return [Command(code: 4)]
+        }
+        return []
     }
 }

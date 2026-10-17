@@ -89,13 +89,15 @@ func run(settings: Settings, duration: Double?) {
             let index: Int32
             if let bluetooth { index = bluetooth }
             else { index = Int32(candidate % Int(count)); candidate += 1 }
-            let reportLength = am_hid_product_id(index) == 0x8243 ? 62 : 64
+            let isBluetooth = am_hid_product_id(index) == 0x8243
+            let reportLength = isBluetooth ? 62 : 64
             candidate += 1
             guard am_audio_open(output) == 0 else { throw nativeError() }
             guard am_hid_open(index) == 0 else { throw nativeError() }
             defer { try? send([Command(code: 4)], reportLength: reportLength) }
             var swiftSbc = MiSbcLiveDecoder()
-            var session = MicSession()
+            var session = MicSession(pushToTalk: isBluetooth)
+            var micEnabled = session.micEnabled
             try send(session.start(now: now()), reportLength: reportLength)
             var buffer = [UInt8](repeating: 0, count: 512)
             var samples = 0
@@ -103,7 +105,7 @@ func run(settings: Settings, duration: Double?) {
             var dropped = 0
             var reportAt = now() + 10
             var announced = false
-            log("建立 HID 会话，输出：\(settings.outputName)，麦克风常开")
+            log("建立 HID 会话，输出：\(settings.outputName)，" + (isBluetooth ? "按住 AI 键说话" : "麦克风常开"))
             while am_should_stop() == 0 && (deadline == nil || now() < deadline!) {
                 guard am_audio_alive() != 0 else { throw Failure(description: "音频设备断开或路由变化。") }
                 let length = buffer.withUnsafeMutableBufferPointer { am_hid_read($0.baseAddress, Int32($0.count)) }
@@ -120,6 +122,16 @@ func run(settings: Settings, duration: Double?) {
                         if !announced { log("已自动开麦，Swift SBC 解码正常。"); announced = true; attempt = 0; lastProblem = "" }
                     }
                     try send(session.receive(packet, now: time), reportLength: reportLength)
+                    if session.micEnabled != micEnabled {
+                        micEnabled = session.micEnabled
+                        switch session.lastTrigger {
+                        case .aiPressed: log("AI 键按下：开麦。")
+                        case .aiReleased: log("AI 键松开：停麦。")
+                        case .keyPressed(let report):
+                            log("按键停麦，报告：" + report.map { String(format: "%02X", $0) }.joined(separator: " "))
+                        case nil: break
+                        }
+                    }
                     if session.isReady, let pcm = MicProtocol.pcm(packet) {
                         let accepted = pcm.withUnsafeBufferPointer { am_audio_push($0.baseAddress, Int32($0.count)) }
                         guard accepted >= 0 else { throw nativeError() }
@@ -135,7 +147,7 @@ func run(settings: Settings, duration: Double?) {
                 try send(session.tick(now: time), reportLength: reportLength)
                 if session.needsReconnect { throw Failure(description: "会话或音频超时，准备重新连接。") }
                 if time >= reportAt {
-                    log("最近约十秒：\(samples) 样本，峰值 \(peak)，缓冲丢弃 \(dropped) 样本。")
+                    if samples > 0 { log("最近约十秒：\(samples) 样本，峰值 \(peak)，缓冲丢弃 \(dropped) 样本。") }
                     samples = 0; peak = 0; dropped = 0; reportAt = time + 10
                 }
             }
@@ -186,7 +198,7 @@ do {
         guard am_process_start() == 0 else { throw Failure(description: "已有 AnyKeyMic 正在运行，或无法取得单实例锁。") }
         run(settings: settings, duration: duration)
     } else {
-        print("AnyKeyMic：USB 键盘麦克风桥接\n  devices                列出输出设备\n  configure <序号>        绑定虚拟声卡\n  run [--seconds <秒>]    自动开麦并持续重连\n运行前退出 AnyKey AI，避免两个程序争用键盘。")
+        print("AnyKeyMic：USB 键盘麦克风桥接\n  devices                列出输出设备\n  configure <序号>        绑定虚拟声卡\n  run [--seconds <秒>]    桥接并持续重连，蓝牙下按住 AI 键说话\n运行前退出 AnyKey AI，避免两个程序争用键盘。")
     }
 } catch {
     log(String(describing: error))
