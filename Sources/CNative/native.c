@@ -83,7 +83,7 @@ int am_init(void) {
     ma_result result = ma_context_init(&backend, 1, NULL, &context);
     if (result != MA_SUCCESS) { hid_exit(); return audio_fail("Audio initialization", result); }
     initialized = 1;
-    hid_list = hid_enumerate(0x248a, 0);
+    hid_list = hid_enumerate(0, 0);
     ma_device_info *found = NULL;
     result = ma_context_get_devices(&context, &found, &output_count, NULL, NULL);
     if (result != MA_SUCCESS) { am_shutdown(); return audio_fail("Output enumeration", result); }
