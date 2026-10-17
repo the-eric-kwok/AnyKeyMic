@@ -113,7 +113,7 @@ func probeHID(seconds: Double) throws {
     }
     print("探针结束：\(packets) 个报文。")
 }
-func run(settings: Settings, duration: Double?) {
+func run(settings: Settings, duration: Double?, forceAlwaysOn: Bool) {
     let deadline = duration.map { now() + $0 }
     var attempt = 0
     var candidate = 0
@@ -158,12 +158,13 @@ func run(settings: Settings, duration: Double?) {
             let isBluetooth = am_hid_product_id(index) == 0x8243
             let reportLength = isBluetooth ? 62 : 64
             candidate += 1
-            log("session_open platform=\(platformName()) hidIndex=\(index) pid=\(String(format: "0x%04X", am_hid_product_id(index))) usage=\(String(format: "0x%04X", am_hid_usage_page(index))) reportLength=\(reportLength) outputID=\(settings.outputID) outputName=\(settings.outputName) mode=\(isBluetooth ? "push_to_talk" : "always_on")")
+            let pushToTalk = isBluetooth && !forceAlwaysOn
+            log("session_open platform=\(platformName()) hidIndex=\(index) pid=\(String(format: "0x%04X", am_hid_product_id(index))) usage=\(String(format: "0x%04X", am_hid_usage_page(index))) reportLength=\(reportLength) outputID=\(settings.outputID) outputName=\(settings.outputName) mode=\(pushToTalk ? "push_to_talk" : "always_on")")
             guard am_audio_open(output) == 0 else { throw nativeError() }
             guard am_hid_open(index) == 0 else { throw nativeError() }
             defer { try? send([Command(code: 4)], reportLength: reportLength) }
             var swiftSbc = MiSbcLiveDecoder()
-            var session = MicSession(pushToTalk: isBluetooth)
+            var session = MicSession(pushToTalk: pushToTalk)
             try send(session.start(now: now()), reportLength: reportLength)
             var buffer = [UInt8](repeating: 0, count: 512)
             var samples = 0
@@ -369,21 +370,34 @@ do {
             }
         }
     } else if action == "run" {
-        let duration: Double?
-        if arguments.count == 1 { duration = nil }
-        else if arguments.count == 3, arguments[1] == "--seconds", let seconds = Double(arguments[2]), seconds > 0, seconds.isFinite {
-            duration = seconds
-        } else { throw Failure(description: "用 run 或 run --seconds 30 启动。") }
+        var duration: Double?
+        var forceAlwaysOn = false
+        var index = 1
+        while index < arguments.count {
+            switch arguments[index] {
+            case "--seconds":
+                guard index + 1 < arguments.count, let seconds = Double(arguments[index + 1]), seconds > 0, seconds.isFinite else {
+                    throw Failure(description: "--seconds 后需要正数秒数。")
+                }
+                duration = seconds
+                index += 2
+            case "--always-on":
+                forceAlwaysOn = true
+                index += 1
+            default:
+                throw Failure(description: "用 run、run --seconds 60 或 run --seconds 60 --always-on 启动。")
+            }
+        }
         let settings = try JSONDecoder().decode(Settings.self, from: Data(contentsOf: configurationURL()))
         guard am_process_start() == 0 else { throw Failure(description: "已有 AnyKeyMic 正在运行，或无法取得单实例锁。") }
-        run(settings: settings, duration: duration)
+        run(settings: settings, duration: duration, forceAlwaysOn: forceAlwaysOn)
     } else {
         print("""
         AnyKeyMic：USB 键盘麦克风桥接
           devices                列出输出设备
           configure <序号>        绑定虚拟声卡
           keymap [none|test]     交互捕获 AI 键映射的目标按键；none 清除；test 试注入一次
-          run [--seconds <秒>]    桥接并持续重连，蓝牙下按住 AI 键说话
+          run [--seconds <秒>] [--always-on]    桥接并持续重连；诊断时可强制蓝牙常开麦
         配置 keymap 后，按住 AI 键会同时按下映射键（如 fn、右 Ctrl），用于触发输入法的语音输入。运行前退出 AnyKey AI，避免两个程序争用键盘。
         """)
     }

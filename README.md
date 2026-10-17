@@ -35,7 +35,7 @@ anykey-mic run
 
 诊断日志会同时记录平台名、进程号、单调时钟、HID 报文类型与间隔、AI 键边沿、映射键注入结果、发送的麦克风命令、SBC 解码耗时、音频设备停止／重路由事件，以及每十秒的样本统计。日志不保存音频内容；键盘报文只记录用于判断按键状态的前 9 字节十六进制摘要。
 
-Windows 运行 `dist\\anykey-mic.exe run --seconds 60`，日志在 `%LOCALAPPDATA%\\AnyKeyMic\\run.log`；macOS 运行 `anykey-mic run --seconds 60`，日志在 `~/Library/Logs/AnyKeyMic/run.log`。两端必须使用同一次构建产生的程序，并在日志中确认 `session_open`、`hid_rx`、`key_inject` 和 `stats` 均存在后再比较吞字现象。若 Windows 显示 `键盘厂商接口数：0`，说明尚未进入可比的设备运行阶段。
+Windows 运行 `dist\\anykey-mic.exe run --seconds 60`，日志在 `%LOCALAPPDATA%\\AnyKeyMic\\run.log`；macOS 运行 `anykey-mic run --seconds 60`，日志在 `~/Library/Logs/AnyKeyMic/run.log`。两端必须使用同一次构建产生的程序，并在日志中确认 `session_open`、`hid_rx`、`key_inject` 和 `stats` 均存在后再比较吞字现象。若 Windows 显示 `键盘厂商接口数：0`，说明尚未进入可比的设备运行阶段。比较蓝牙常开麦行为时，Windows 使用 `run --seconds 60 --always-on`，并确认日志中的 `session_open` 为 `mode=always_on`。
 
 ### 开麦与停麦
 
