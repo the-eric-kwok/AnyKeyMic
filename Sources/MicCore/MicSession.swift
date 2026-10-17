@@ -36,6 +36,18 @@ public enum MicProtocol {
         }
     }
 
+    public static func commandCode(_ bytes: [UInt8]) -> UInt8? {
+        command(bytes)
+    }
+
+    public static func aiKeyState(_ bytes: [UInt8]) -> Bool? {
+        aiKeyPressed(bytes)
+    }
+
+    public static func keyboardReportHasKeyDown(_ bytes: [UInt8]) -> Bool {
+        isKeyDown(bytes)
+    }
+
     static func command(_ bytes: [UInt8]) -> UInt8? {
         guard bytes.count >= 8,
               bytes[0] == 0x05, bytes[1] == 0xff,
@@ -114,6 +126,10 @@ public struct MicSession: Sendable {
     public init(pushToTalk: Bool = false) {
         self.pushToTalk = pushToTalk
         micEnabled = !pushToTalk
+    }
+
+    public var debugState: String {
+        "phase=\(phase) ready=\(isReady) micEnabled=\(micEnabled) micOn=\(micOn) awaitingVoice=\(awaitingVoice) retries=\(retries) triggerID=\(triggerID) reconnect=\(needsReconnect)"
     }
 
     public mutating func start(now: Double) -> [Command] {

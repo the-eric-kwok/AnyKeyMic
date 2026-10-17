@@ -17,13 +17,19 @@
 #ifdef _WIN32
 #include <windows.h>
 static volatile LONG audio_alive;
+static volatile LONG audio_event;
 static void set_alive(int value) { InterlockedExchange(&audio_alive, value); }
 static int get_alive(void) { return (int)InterlockedCompareExchange(&audio_alive, 0, 0); }
+static void set_audio_event(int value) { InterlockedExchange(&audio_event, value); }
+static int take_audio_event(void) { return (int)InterlockedExchange(&audio_event, 0); }
 #else
 #include <stdatomic.h>
 static atomic_int audio_alive;
+static atomic_int audio_event;
 static void set_alive(int value) { atomic_store(&audio_alive, value); }
 static int get_alive(void) { return atomic_load(&audio_alive); }
+static void set_audio_event(int value) { atomic_store(&audio_event, value); }
+static int take_audio_event(void) { return atomic_exchange(&audio_event, 0); }
 #endif
 
 static char last_error[256];
@@ -159,12 +165,18 @@ static void audio_callback(ma_device *unused, void *output, const void *input, m
     }
 }
 static void audio_notification(const ma_device_notification *notification) {
-    if (notification->type == ma_device_notification_type_stopped ||
-        notification->type == ma_device_notification_type_rerouted) set_alive(0);
+    if (notification->type == ma_device_notification_type_stopped) {
+        set_audio_event(1);
+        set_alive(0);
+    } else if (notification->type == ma_device_notification_type_rerouted) {
+        set_audio_event(2);
+        set_alive(0);
+    }
 }
 int am_audio_open(int index) {
     if (!initialized || !am_output_name(index)) return am_set_error("Invalid output index");
     am_audio_close();
+    take_audio_event();
     ma_result result = ma_pcm_rb_init(ma_format_s16, 1, 8192, NULL, NULL, &ring);
     if (result != MA_SUCCESS) return audio_fail("Audio queue", result);
     ring_initialized = 1;
@@ -198,6 +210,9 @@ int am_audio_push(const int16_t *samples, int frames) {
     return accepted;
 }
 int am_audio_alive(void) { return device_initialized && get_alive(); }
+int am_audio_event(void) {
+    return take_audio_event();
+}
 void am_audio_close(void) {
     set_alive(0);
     if (device_initialized) { ma_device_uninit(&device); device_initialized = 0; }

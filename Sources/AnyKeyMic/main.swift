@@ -23,16 +23,42 @@ struct Settings: Codable {
 }
 struct Failure: Error, CustomStringConvertible { let description: String }
 func nativeError() -> Failure { Failure(description: String(cString: am_error())) }
+private let logLock = NSLock()
+private var logSequence = 0
+private let logDateFormatter: ISO8601DateFormatter = {
+    let formatter = ISO8601DateFormatter()
+    formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+    return formatter
+}()
+func platformName() -> String {
+    #if os(Windows)
+    return "Windows"
+    #elseif os(macOS)
+    return "macOS"
+    #else
+    return "unknown"
+    #endif
+}
 func log(_ message: String) {
-    let line = "\(ISO8601DateFormatter().string(from: Date()))  \(message)\n"
+    logLock.lock()
+    defer { logLock.unlock() }
+    logSequence += 1
+    let line = "\(logDateFormatter.string(from: Date())) seq=\(logSequence) mono=\(String(format: "%.6f", now())) pid=\(ProcessInfo.processInfo.processIdentifier) \(message)\n"
     FileHandle.standardError.write(Data(line.utf8))
 }
 func now() -> Double { ProcessInfo.processInfo.systemUptime }
+func hex(_ bytes: ArraySlice<UInt8>) -> String {
+    bytes.map { String(format: "%02X", $0) }.joined(separator: " ")
+}
+func commandCodes(_ commands: [Command]) -> String {
+    commands.map { String(format: "%02X", $0.bytes[5]) }.joined(separator: ",")
+}
 func send(_ commands: [Command], reportLength: Int = 64) throws {
     for command in commands {
         guard let report = command.encoded(channel: 0xf1, reportLength: reportLength) else {
             throw Failure(description: "HID 命令长度与传输接口不匹配。")
         }
+        log("hid_tx code=\(String(format: "0x%02X", command.bytes[5])) len=\(reportLength) payloadLen=\(command.bytes[6])")
         let result = report.withUnsafeBufferPointer { am_hid_write($0.baseAddress, Int32($0.count)) }
         guard result > 0 else { throw nativeError() }
     }
@@ -95,15 +121,18 @@ func run(settings: Settings, duration: Double?) {
     let mapped = settings.aiKeyMap
     var keyHeld = false
     var keyBroken = false
+    log("process_start platform=\(platformName()) mode=diagnostic mappedKey=\(mapped.map { "\($0):\(KeyNames.name($0))" } ?? "none")")
     func injectKey(_ pressed: Bool) {
         guard let mapped, !keyBroken, pressed != keyHeld else { return }
+        log("key_inject request platform=\(platformName()) key=\(KeyNames.name(mapped)) code=\(mapped) pressed=\(pressed) heldBefore=\(keyHeld)")
         guard am_key_inject(mapped, pressed ? 1 : 0) == 0 else {
             keyBroken = true
             keyHeld = false
-            log("映射键注入失败：\(String(cString: am_error()))")
+            log("key_inject result=error error=\(String(cString: am_error()))")
             return
         }
         keyHeld = pressed
+        log("key_inject result=ok heldAfter=\(keyHeld)")
     }
     if let mapped {
         if am_key_ready() != 0 { log("AI 键映射不可用：\(String(cString: am_error()))") }
@@ -129,6 +158,7 @@ func run(settings: Settings, duration: Double?) {
             let isBluetooth = am_hid_product_id(index) == 0x8243
             let reportLength = isBluetooth ? 62 : 64
             candidate += 1
+            log("session_open platform=\(platformName()) hidIndex=\(index) pid=\(String(format: "0x%04X", am_hid_product_id(index))) usage=\(String(format: "0x%04X", am_hid_usage_page(index))) reportLength=\(reportLength) outputID=\(settings.outputID) outputName=\(settings.outputName) mode=\(isBluetooth ? "push_to_talk" : "always_on")")
             guard am_audio_open(output) == 0 else { throw nativeError() }
             guard am_hid_open(index) == 0 else { throw nativeError() }
             defer { try? send([Command(code: 4)], reportLength: reportLength) }
@@ -142,23 +172,85 @@ func run(settings: Settings, duration: Double?) {
             var reportAt = now() + 10
             var announced = false
             var handledTrigger = 0
-            log("建立 HID 会话，输出：\(settings.outputName)，" + (isBluetooth ? "按住 AI 键说话" : "麦克风常开"))
+            var rxSequence = 0
+            var lastPacketAt: Double?
+            var zeroReads = 0
+            var keyboardReports = 0
+            var commandReports = 0
+            var sbcReports = 0
+            var pcmReports = 0
+            var unknownReports = 0
+            var decodedFrames = 0
+            var decodeFailures = 0
+            var decodeTime = 0.0
+            var audioEvents = 0
+            var lastKeyboardReport: [UInt8]?
+            log("session_ready state=\(session.debugState) output=\(settings.outputName)")
             while am_should_stop() == 0 && (deadline == nil || now() < deadline!) {
+                let audioEvent = am_audio_event()
+                if audioEvent != 0 {
+                    audioEvents += 1
+                    log("audio_event type=\(audioEvent == 1 ? "stopped" : "rerouted")")
+                }
                 guard am_audio_alive() != 0 else { throw Failure(description: "音频设备断开或路由变化。") }
                 let length = buffer.withUnsafeMutableBufferPointer { am_hid_read($0.baseAddress, Int32($0.count)) }
                 guard length >= 0 else { throw nativeError() }
                 let time = now()
-                if length > 0 {
+                if length == 0 {
+                    zeroReads += 1
+                } else {
                     let packet = Array(buffer.prefix(Int(length)))
+                    rxSequence += 1
+                    let delta = lastPacketAt.map { (time - $0) * 1000 } ?? 0
+                    lastPacketAt = time
+                    if packet.first == 0x1b {
+                        sbcReports += 1
+                        if sbcReports <= 3 { log("hid_rx seq=\(rxSequence) kind=sbc len=\(length) dtMs=\(String(format: "%.3f", delta))") }
+                    } else if packet.first == 0x1c {
+                        pcmReports += 1
+                        if pcmReports <= 3 { log("hid_rx seq=\(rxSequence) kind=pcm len=\(length) dtMs=\(String(format: "%.3f", delta))") }
+                    } else if packet.first == 0x02, packet.count >= 9 {
+                        keyboardReports += 1
+                        if lastKeyboardReport != packet {
+                            log("hid_rx seq=\(rxSequence) kind=keyboard len=\(length) dtMs=\(String(format: "%.3f", delta)) keyDown=\(MicProtocol.keyboardReportHasKeyDown(packet)) head=\(hex(packet.prefix(9)))")
+                            lastKeyboardReport = packet
+                        }
+                    } else if let code = MicProtocol.commandCode(packet) {
+                        commandReports += 1
+                        log("hid_rx seq=\(rxSequence) kind=command code=\(String(format: "0x%02X", code)) len=\(length) dtMs=\(String(format: "%.3f", delta)) head=\(hex(packet.prefix(9)))")
+                    } else {
+                        unknownReports += 1
+                        if unknownReports <= 5 || unknownReports % 100 == 0 {
+                            log("hid_rx seq=\(rxSequence) kind=unknown len=\(length) dtMs=\(String(format: "%.3f", delta)) head=\(hex(packet.prefix(16)))")
+                        }
+                    }
                     if packet.first == 0x1b, let frames = MicProtocol.bluetoothFrames(packet) {
-                        let pcm = try swiftSbc.decode(frames)
+                        let decodeStarted = now()
+                        let pcm: [Int16]
+                        do {
+                            pcm = try swiftSbc.decode(frames)
+                        } catch {
+                            decodeFailures += 1
+                            log("sbc_decode result=error frameCount=\(frames.count) error=\(error)")
+                            throw error
+                        }
+                        decodeTime += now() - decodeStarted
+                        decodedFrames += frames.count
                         let accepted = pcm.withUnsafeBufferPointer { am_audio_push($0.baseAddress, Int32($0.count)) }
                         guard accepted >= 0 else { throw nativeError() }
                         samples += pcm.count; dropped += pcm.count - Int(accepted)
                         for value in pcm { peak = max(peak, abs(Int(value))) }
                         if !announced { log("已自动开麦，Swift SBC 解码正常。"); announced = true; attempt = 0; lastProblem = "" }
                     }
-                    try send(session.receive(packet, now: time), reportLength: reportLength)
+                    let previousState = session.debugState
+                    let commands = session.receive(packet, now: time)
+                    if let keyState = MicProtocol.aiKeyState(packet) {
+                        log("ai_key state=\(keyState ? "down" : "up") seq=\(rxSequence) session=\(session.debugState)")
+                    }
+                    try send(commands, reportLength: reportLength)
+                    if previousState != session.debugState {
+                        log("session_state source=receive before={\(previousState)} after={\(session.debugState)} commands=[\(commandCodes(commands))]")
+                    }
                     if session.triggerID != handledTrigger {
                         handledTrigger = session.triggerID
                         let downNote = mapped.map { "，同时按下\(KeyNames.name($0))" } ?? ""
@@ -188,11 +280,16 @@ func run(settings: Settings, duration: Double?) {
                         }
                     }
                 }
-                try send(session.tick(now: time), reportLength: reportLength)
+                let tickCommands = session.tick(now: time)
+                try send(tickCommands, reportLength: reportLength)
+                if !tickCommands.isEmpty {
+                    log("session_tick state=\(session.debugState) commands=[\(commandCodes(tickCommands))]")
+                }
                 if session.needsReconnect { throw Failure(description: "会话或音频超时，准备重新连接。") }
                 if time >= reportAt {
-                    if samples > 0 { log("最近约十秒：\(samples) 样本，峰值 \(peak)，缓冲丢弃 \(dropped) 样本。") }
+                    log("stats interval=10s hidRx=\(rxSequence) zeroReads=\(zeroReads) keyboard=\(keyboardReports) command=\(commandReports) sbc=\(sbcReports) pcm=\(pcmReports) unknown=\(unknownReports) decodedFrames=\(decodedFrames) decodeFailures=\(decodeFailures) decodeMs=\(String(format: "%.1f", decodeTime * 1000)) samples=\(samples) peak=\(peak) bufferDropped=\(dropped) audioEvents=\(audioEvents) state=\(session.debugState)")
                     samples = 0; peak = 0; dropped = 0; reportAt = time + 10
+                    rxSequence = 0; zeroReads = 0; keyboardReports = 0; commandReports = 0; sbcReports = 0; pcmReports = 0; unknownReports = 0; decodedFrames = 0; decodeFailures = 0; decodeTime = 0; audioEvents = 0
                 }
             }
         } catch {

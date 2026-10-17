@@ -23,6 +23,8 @@ int am_audio_open(int index);
 /* 返回实际接受的帧数；队列满时丢弃新帧，不修改消费者读指针。 */
 int am_audio_push(const int16_t *samples, int frames);
 int am_audio_alive(void);
+/* 返回最近一次音频设备通知：1=停止，2=重路由。读取后清零。 */
+int am_audio_event(void);
 void am_audio_close(void);
 int am_process_start(void);
 int am_should_stop(void);
