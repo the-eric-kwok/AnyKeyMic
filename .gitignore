@@ -5,3 +5,5 @@ build/
 dist/
 *.log
 .sbc-golden/
+.codegraph/
+.DS_Store
