@@ -2,6 +2,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <ctype.h>
 #include "vendor/hidapi/hidapi/hidapi.h"
 #ifdef __APPLE__
 #include "vendor/hidapi/mac/hidapi_darwin.h"
@@ -43,6 +44,20 @@ static ma_device_info *outputs;
 static ma_uint32 output_count;
 static char id_text[2048];
 
+static int contains_case_insensitive(const char *text, const char *needle) {
+    if (!text || !needle || !*needle) return 0;
+    for (; *text; ++text) {
+        const char *a = text;
+        const char *b = needle;
+        while (*a && *b && tolower((unsigned char)*a) == tolower((unsigned char)*b)) {
+            ++a;
+            ++b;
+        }
+        if (!*b) return 1;
+    }
+    return 0;
+}
+
 /* 供各源文件共用的错误通道；返回 -1 方便调用方直接 return。 */
 int am_set_error(const char *message) {
     snprintf(last_error, sizeof(last_error), "%s", message);
@@ -59,7 +74,8 @@ static struct hid_device_info *hid_at(int index) {
     if (index < 0) return NULL;
     for (struct hid_device_info *p = hid_list; p; p = p->next) {
         int known_vendor = p->vendor_id == 0x248a;
-        int bluetooth_path = p->path && strstr(p->path, "pid&8243") && strstr(p->path, "&col02");
+        int bluetooth_path = contains_case_insensitive(p->path, "pid&8243") &&
+            contains_case_insensitive(p->path, "&col02");
         int bluetooth_product = p->product_id == 0x8243 || bluetooth_path;
         if ((known_vendor && p->product_id == 0x8102 && p->usage_page >= 0xff00) ||
             (bluetooth_product && (p->usage_page >= 0xff00 || bluetooth_path))) {
@@ -113,7 +129,7 @@ int am_hid_count(void) {
 int am_hid_product_id(int index) {
     struct hid_device_info *p = hid_at(index);
     if (!p) return 0;
-    return p->product_id == 0 && p->path && strstr(p->path, "pid&8243") ? 0x8243 : (int)p->product_id;
+    return p->product_id == 0 && contains_case_insensitive(p->path, "pid&8243") ? 0x8243 : (int)p->product_id;
 }
 int am_hid_usage_page(int index) { struct hid_device_info *p = hid_at(index); return p ? (int)p->usage_page : 0; }
 const char *am_hid_path(int index) {
