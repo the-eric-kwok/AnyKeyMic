@@ -59,6 +59,7 @@ typedef LONG NTSTATUS;
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <wctype.h>
 
 #ifdef MIN
 #undef MIN
@@ -342,6 +343,21 @@ static HANDLE open_device(const wchar_t *path, BOOL open_rw)
 		0);
 
 	return handle;
+}
+
+static BOOL contains_wide_case_insensitive(const wchar_t *text, const wchar_t *needle)
+{
+	if (!text || !needle || !*needle) return FALSE;
+	for (; *text; ++text) {
+		const wchar_t *a = text;
+		const wchar_t *b = needle;
+		while (*a && *b && towlower(*a) == towlower(*b)) {
+			++a;
+			++b;
+		}
+		if (!*b) return TRUE;
+	}
+	return FALSE;
 }
 
 static HANDLE open_device_for_enumeration(const wchar_t *path)
@@ -819,10 +835,13 @@ struct hid_device_info HID_API_EXPORT * HID_API_CALL hid_enumerate(unsigned shor
 		HIDD_ATTRIBUTES attrib;
 
 		/* Open read-only handle to the device */
+		BOOL target_path = contains_wide_case_insensitive(device_interface, L"8243") &&
+			contains_wide_case_insensitive(device_interface, L"col02");
 		device_handle = open_device_for_enumeration(device_interface);
 
 		/* Check validity of device_handle. */
 		if (device_handle == INVALID_HANDLE_VALUE) {
+			if (target_path) fprintf(stderr, "hid_enum target open_failed error=%lu path=%ls\n", GetLastError(), device_interface);
 			/* Unable to open the device. */
 			continue;
 		}
@@ -830,8 +849,8 @@ struct hid_device_info HID_API_EXPORT * HID_API_CALL hid_enumerate(unsigned shor
 		/* Get the Vendor ID and Product ID for this device. */
 		attrib.Size = sizeof(HIDD_ATTRIBUTES);
 		BOOL attributes_ok = HidD_GetAttributes(device_handle, &attrib);
-		BOOL bluetooth_vendor_path = wcsstr(device_interface, L"8243") != NULL &&
-			wcsstr(device_interface, L"col02") != NULL;
+		BOOL bluetooth_vendor_path = target_path;
+		if (target_path) fprintf(stderr, "hid_enum target opened attrs=%d vid=%04X pid=%04X path=%ls\n", attributes_ok, attrib.VendorID, attrib.ProductID, device_interface);
 		if (!attributes_ok && !bluetooth_vendor_path) goto cont_close;
 
 		/* Check the VID/PID to see if we should add this
