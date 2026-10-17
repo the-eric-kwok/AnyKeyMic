@@ -283,12 +283,10 @@ final class MicSessionTests: XCTestCase {
         key[0] = 0x02
         XCTAssertTrue(session.receive(key, now: 2).isEmpty)
         key[1] = 0x10
-        XCTAssertTrue(session.receive(key, now: 2.05).isEmpty)
-        XCTAssertTrue(session.micEnabled)
-        XCTAssertEqual(session.lastTrigger, .aiPressed)
-        key[1] = 0x01
-        XCTAssertEqual(codes(session.receive(key, now: 2.06)), [4])
+        XCTAssertEqual(codes(session.receive(key, now: 2.05)), [4])
+        XCTAssertFalse(session.micEnabled)
         XCTAssertEqual(session.lastTrigger, .keyPressed(report: Array(key.prefix(9))))
+        XCTAssertTrue(session.receive(key, now: 2.06).isEmpty)
         _ = session.receive(aiKey(0x33), now: 2.07)
         key[1] = 0
         key[3] = 0x04

@@ -57,10 +57,10 @@ public enum MicProtocol {
     }
 
     /// 蓝牙下厂商接口也会收到报告编号 02 的标准键盘报告：修饰键、保留字节、六个键码。
-    /// 单独按住右 Ctrl 不算打字，它常被设为输入法语音热键。
+    /// 任何修饰键或键码按下都视为打字并停麦。
     static func isKeyDown(_ bytes: [UInt8]) -> Bool {
         guard bytes.count >= 9, bytes[0] == 0x02 else { return false }
-        return bytes[1] & ~0x10 != 0 || bytes[3...8].contains { $0 != 0 }
+        return bytes[1] != 0 || bytes[3...8].contains { $0 != 0 }
     }
 }
 
