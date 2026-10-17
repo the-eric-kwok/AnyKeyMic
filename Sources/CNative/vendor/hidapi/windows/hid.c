@@ -344,6 +344,16 @@ static HANDLE open_device(const wchar_t *path, BOOL open_rw)
 	return handle;
 }
 
+static HANDLE open_device_for_enumeration(const wchar_t *path)
+{
+	HANDLE handle = open_device(path, FALSE);
+	if (handle == INVALID_HANDLE_VALUE) {
+		handle = CreateFileW(path, 0, FILE_SHARE_READ|FILE_SHARE_WRITE, NULL,
+			OPEN_EXISTING, 0, 0);
+	}
+	return handle;
+}
+
 HID_API_EXPORT const struct hid_api_version* HID_API_CALL hid_version(void)
 {
 	return &api_version;
@@ -809,7 +819,7 @@ struct hid_device_info HID_API_EXPORT * HID_API_CALL hid_enumerate(unsigned shor
 		HIDD_ATTRIBUTES attrib;
 
 		/* Open read-only handle to the device */
-		device_handle = open_device(device_interface, FALSE);
+		device_handle = open_device_for_enumeration(device_interface);
 
 		/* Check validity of device_handle. */
 		if (device_handle == INVALID_HANDLE_VALUE) {
