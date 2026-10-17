@@ -331,7 +331,7 @@ static void register_global_error(const WCHAR *string_error)
 static HANDLE open_device(const wchar_t *path, BOOL open_rw)
 {
 	HANDLE handle;
-	DWORD desired_access = (open_rw)? (GENERIC_WRITE | GENERIC_READ): 0;
+	DWORD desired_access = (open_rw)? (GENERIC_WRITE | GENERIC_READ): GENERIC_READ;
 	DWORD share_mode = FILE_SHARE_READ|FILE_SHARE_WRITE;
 
 	handle = CreateFileW(path,
