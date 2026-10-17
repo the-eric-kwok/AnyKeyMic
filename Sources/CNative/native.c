@@ -37,7 +37,8 @@ static ma_device_info *outputs;
 static ma_uint32 output_count;
 static char id_text[2048];
 
-static int fail(const char *message) {
+/* 供各源文件共用的错误通道；返回 -1 方便调用方直接 return。 */
+int am_set_error(const char *message) {
     snprintf(last_error, sizeof(last_error), "%s", message);
     return -1;
 }
@@ -64,7 +65,7 @@ static struct hid_device_info *hid_at(int index) {
 int am_init(void) {
     if (initialized) return 0;
     last_error[0] = 0;
-    if (hid_init() != 0) return fail("HID initialization failed");
+    if (hid_init() != 0) return am_set_error("HID initialization failed");
 #ifdef __APPLE__
     hid_darwin_set_open_exclusive(0);
     ma_backend backend = ma_backend_coreaudio;
@@ -82,7 +83,7 @@ int am_init(void) {
     if (result != MA_SUCCESS) { am_shutdown(); return audio_fail("Output enumeration", result); }
     if (output_count) {
         outputs = calloc(output_count, sizeof(*outputs));
-        if (!outputs) { am_shutdown(); return fail("Output allocation failed"); }
+        if (!outputs) { am_shutdown(); return am_set_error("Output allocation failed"); }
         memcpy(outputs, found, output_count * sizeof(*outputs));
     }
     return 0;
@@ -97,7 +98,7 @@ void am_shutdown(void) {
     if (initialized) { ma_context_uninit(&context); hid_exit(); initialized = 0; }
 }
 int am_hid_count(void) {
-    if (!initialized) return fail("Not initialized");
+    if (!initialized) return am_set_error("Not initialized");
     int count = 0;
     while (hid_at(count)) ++count;
     return count;
@@ -113,22 +114,22 @@ const char *am_hid_path(int index) {
 }
 int am_hid_open(int index) {
     struct hid_device_info *p = hid_at(index);
-    if (!p) return fail("Invalid HID index");
+    if (!p) return am_set_error("Invalid HID index");
     am_hid_close();
     keyboard = hid_open_path(p->path);
-    return keyboard ? 0 : fail("Cannot open selected HID interface");
+    return keyboard ? 0 : am_set_error("Cannot open selected HID interface");
 }
 int am_hid_read(uint8_t *data, int capacity) {
-    if (!keyboard || !data || capacity <= 0) return fail("Invalid HID read");
+    if (!keyboard || !data || capacity <= 0) return am_set_error("Invalid HID read");
     int count = hid_read_timeout(keyboard, data, (size_t)capacity, 50);
-    return count < 0 ? fail("HID read failed or device disconnected") : count;
+    return count < 0 ? am_set_error("HID read failed or device disconnected") : count;
 }
 int am_hid_write(const uint8_t *data, int length) {
-    if (!keyboard || !data || length <= 0) return fail("Invalid HID write");
+    if (!keyboard || !data || length <= 0) return am_set_error("Invalid HID write");
     int count = hid_write(keyboard, data, (size_t)length);
-    return count < 0 ? fail("HID write failed") : count;
+    return count < 0 ? am_set_error("HID write failed") : count;
 }
-int am_output_count(void) { return initialized ? (int)output_count : fail("Not initialized"); }
+int am_output_count(void) { return initialized ? (int)output_count : am_set_error("Not initialized"); }
 const char *am_output_name(int index) {
     return index >= 0 && (ma_uint32)index < output_count ? outputs[index].name : NULL;
 }
@@ -162,7 +163,7 @@ static void audio_notification(const ma_device_notification *notification) {
         notification->type == ma_device_notification_type_rerouted) set_alive(0);
 }
 int am_audio_open(int index) {
-    if (!initialized || !am_output_name(index)) return fail("Invalid output index");
+    if (!initialized || !am_output_name(index)) return am_set_error("Invalid output index");
     am_audio_close();
     ma_result result = ma_pcm_rb_init(ma_format_s16, 1, 8192, NULL, NULL, &ring);
     if (result != MA_SUCCESS) return audio_fail("Audio queue", result);
@@ -184,7 +185,7 @@ int am_audio_open(int index) {
     return 0;
 }
 int am_audio_push(const int16_t *samples, int frames) {
-    if (!samples || frames < 0 || !am_audio_alive()) return fail("Audio output unavailable");
+    if (!samples || frames < 0 || !am_audio_alive()) return am_set_error("Audio output unavailable");
     int accepted = 0;
     while (accepted < frames) {
         ma_uint32 available = (ma_uint32)(frames - accepted);

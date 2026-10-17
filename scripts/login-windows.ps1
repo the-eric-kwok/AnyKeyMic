@@ -1,5 +1,5 @@
 param(
-    [ValidateSet('help','devices','configure','install','uninstall','start','stop','restart','status')]
+    [ValidateSet('help','devices','configure','keymap','install','uninstall','start','stop','restart','status')]
     [string]$Action = 'help',
     [string]$Index,
     [switch]$Remove
@@ -67,6 +67,7 @@ function Show-Help {
 Usage: .\scripts\login-windows.ps1 <command>
   devices              List output devices
   configure <index>    Bind the virtual audio device listed by devices
+  keymap [none]        Capture AI key mapping interactively; none clears it
   install              Install and start per-user logon startup
   uninstall            Remove logon startup, keep config and log
   start | stop | restart | status
@@ -76,6 +77,7 @@ switch ($Action) {
     help { Show-Help }
     devices { Invoke-Binary devices }
     configure { if ($Index) { Invoke-Binary configure $Index } else { Invoke-Binary configure } }
+    keymap { if ($Index -eq 'none') { Invoke-Binary keymap none } else { Invoke-Binary keymap } }
     install { Install-Service }
     uninstall { Uninstall-Service }
     start { Start-ServiceProcess }

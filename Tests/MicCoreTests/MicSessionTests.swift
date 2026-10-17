@@ -306,13 +306,56 @@ final class MicSessionTests: XCTestCase {
         XCTAssertEqual(session.lastTrigger, .aiReleased)
     }
 
-    func testAlwaysOnIgnoresAIKeyAndTyping() {
+    func testAlwaysOnReportsAIKeyEdgesButKeepsMicOn() {
         var session = streamingSession()
         var key = Array(repeating: UInt8(0), count: 62)
         key[0] = 0x02; key[3] = 0x04
-        XCTAssertTrue(session.receive(Command(code: 0x9f, payload: [0x42]).bytes, now: 1).isEmpty)
+        XCTAssertTrue(session.receive(aiKey(0x33), now: 1).isEmpty)
+        XCTAssertEqual(session.lastTrigger, .aiPressed)
+        XCTAssertEqual(session.triggerID, 1)
+        XCTAssertTrue(session.receive(aiKey(0x42), now: 1.05).isEmpty)
+        XCTAssertEqual(session.lastTrigger, .aiReleased)
+        XCTAssertEqual(session.triggerID, 2)
         XCTAssertTrue(session.receive(key, now: 1.1).isEmpty)
+        XCTAssertEqual(session.triggerID, 2)
         XCTAssertTrue(session.micEnabled)
+    }
+
+    func testTriggerIDAdvancesOncePerEdgeInPushToTalk() {
+        var session = MicSession(pushToTalk: true)
+        _ = session.start(now: 0)
+        XCTAssertEqual(session.triggerID, 0)
+        _ = session.receive(aiKey(0x33), now: 0.1)
+        XCTAssertEqual(session.triggerID, 1)
+        _ = session.receive(aiKey(0x33), now: 0.2)
+        XCTAssertEqual(session.triggerID, 1)
+        _ = session.receive(aiKey(0x42), now: 0.3)
+        XCTAssertEqual(session.triggerID, 2)
+        XCTAssertEqual(session.lastTrigger, .aiReleased)
+        _ = session.receive(aiKey(0x33), now: 0.4)
+        var key = Array(repeating: UInt8(0), count: 62)
+        key[0] = 0x02; key[3] = 0x04
+        _ = session.receive(key, now: 0.5)
+        XCTAssertEqual(session.triggerID, 4)
+        XCTAssertEqual(session.lastTrigger, .keyPressed(report: Array(key.prefix(9))))
+    }
+
+    func testKeyNamesCoverCommonCodes() {
+        #if os(Windows)
+        XCTAssertEqual(KeyNames.escapeCode, 0x1b)
+        XCTAssertEqual(KeyNames.name(0xa3), "右 Ctrl")
+        XCTAssertEqual(KeyNames.name(0xa5), "右 Alt")
+        XCTAssertEqual(KeyNames.name(0x70), "F1")
+        XCTAssertEqual(KeyNames.name(0x7b), "F12")
+        #else
+        XCTAssertEqual(KeyNames.escapeCode, 0x35)
+        XCTAssertEqual(KeyNames.name(0x3f), "fn 键")
+        XCTAssertEqual(KeyNames.name(0x3e), "右 Ctrl")
+        XCTAssertEqual(KeyNames.name(0x3d), "右 Option")
+        XCTAssertEqual(KeyNames.name(0x7a), "F1")
+        XCTAssertEqual(KeyNames.name(0x6f), "F12")
+        XCTAssertEqual(KeyNames.name(0x1234), "键码 4660")
+        #endif
     }
 
     func testPressDuringHandshakeOpensMicWhenReady() {

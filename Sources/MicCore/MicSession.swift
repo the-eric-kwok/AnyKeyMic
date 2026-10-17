@@ -106,6 +106,8 @@ public struct MicSession: Sendable {
     public private(set) var isReady = false
     public private(set) var micEnabled: Bool
     public private(set) var lastTrigger: MicTrigger?
+    /// 每记录一个新 lastTrigger 递增，调用方以此可靠消费边沿。
+    public private(set) var triggerID = 0
     private let pushToTalk: Bool
 
     /// pushToTalk 为真时启动即停麦，按住 AI 键才推流；否则麦克风常开。
@@ -129,14 +131,16 @@ public struct MicSession: Sendable {
             if phase == .streaming { lastAudio = now; retries = 0; micOn = true; awaitingVoice = false }
             return []
         }
-        if pushToTalk {
-            if let pressed = MicProtocol.aiKeyPressed(bytes) {
-                return setMic(pressed, trigger: pressed ? .aiPressed : .aiReleased, now: now)
-            }
-            // 推流挤占链路时 AI 键松开报告可能丢失，打字即可证明已松开。
-            if micEnabled, MicProtocol.isKeyDown(bytes) {
-                return setMic(false, trigger: .keyPressed(report: Array(bytes.prefix(9))), now: now)
-            }
+        if let pressed = MicProtocol.aiKeyPressed(bytes) {
+            // 常开模式下 AI 键边沿仅对外报告（用于映射键注入），不影响推流。
+            if pushToTalk { return setMic(pressed, trigger: pressed ? .aiPressed : .aiReleased, now: now) }
+            lastTrigger = pressed ? .aiPressed : .aiReleased
+            triggerID += 1
+            return []
+        }
+        // 推流挤占链路时 AI 键松开报告可能丢失，打字即可证明已松开。
+        if pushToTalk, micEnabled, MicProtocol.isKeyDown(bytes) {
+            return setMic(false, trigger: .keyPressed(report: Array(bytes.prefix(9))), now: now)
         }
         guard let code = MicProtocol.command(bytes) else { return [] }
         if code == 104 {
@@ -211,7 +215,7 @@ public struct MicSession: Sendable {
     }
 
     private mutating func setMic(_ enabled: Bool, trigger: MicTrigger, now: Double) -> [Command] {
-        if enabled != micEnabled { lastTrigger = trigger }
+        if enabled != micEnabled { lastTrigger = trigger; triggerID += 1 }
         micEnabled = enabled
         if micEnabled, phase == .paused {
             phase = .streaming

@@ -16,6 +16,7 @@ usage() {
 用法：$0 <命令>
   devices              列出输出设备
   configure <序号>      绑定 devices 列出的虚拟声卡
+  keymap [none]        交互捕获 AI 键映射的目标按键；none 清除映射
   install              构建、安装并启动登录自启服务
   uninstall            卸载登录自启服务，保留配置与日志
   start | stop | restart | status
@@ -104,7 +105,7 @@ uninstall_service() {
 
 command=${1:-help}
 case "$command" in
-    devices|configure) build; exec "$built_binary" "$@" ;;
+    devices|configure|keymap) build; exec "$built_binary" "$@" ;;
     install) install_service ;;
     uninstall|remove|--remove) uninstall_service ;;
     start) start_service ;;

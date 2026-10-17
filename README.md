@@ -22,6 +22,7 @@ HIDAPI 0.14.0 负责非独占 HID，miniaudio 0.11.21 负责 WASAPI／Core Audio
 ```shell
 anykey-mic devices
 anykey-mic configure 2
+anykey-mic keymap
 anykey-mic run --seconds 30
 anykey-mic run
 ```
@@ -39,6 +40,15 @@ USB 连接下麦克风常开。蓝牙连接下采用按住说话，因为持续�
 - **停麦方式二**：开麦期间按下其他任意键。推流时 AI 键的松开报告可能丢失，开始打字即视为已松开。日志记为 `按键停麦，报告：…`，附触发停麦的键盘报告。
 
 单独按住右 Ctrl 不会停麦，方便把它设为输入法的语音输入热键：先按住 AI 键，再按右 Ctrl 唤起语音输入，说完松开 AI 键。服务启动和断线重连后均为停麦状态。
+
+### AI 键映射
+
+按住 AI 键开麦的同时，桥接程序会向系统合成注入一个映射键，把输入法的语音输入热键设为该键后，只按 AI 键即可一并唤起语音输入。运行 `anykey-mic keymap` 交互捕获目标按键（macOS 常用 fn 键，Windows 常用右 Ctrl），按 Esc 取消；`anykey-mic keymap test` 会注入一次按下与松开，用于立刻验证输入法是否响应；`anykey-mic keymap none` 清除映射。映射以平台键码存入 config.json，`configure` 重新绑定声卡时会保留。
+
+- 松开 AI 键或打字停麦时同步松开映射键；断线重连和程序退出也会自动松开，不会粘键。
+- 蓝牙按住说话与 USB 常开两种模式都生效：常开模式下按 AI 键只注入映射键，不影响持续收音。
+- macOS 注入需要「系统设置 › 隐私与安全性 › 辅助功能」权限（捕获沿用「输入监控」），缺失时启动日志会提示；Windows 无需额外权限。
+- fn 键在 Windows 上没有标准键码，无法捕获或注入，属系统限制。macOS 听写若设为「按两次 fn」，需快速按两次 AI 键触发。
 
 蓝牙解码器已经内置在 Swift 主程序中，运行时不需要 Node.js、N-API、厂商 `.node` 文件或额外环境变量。历史 golden 数据只用于开发期回归测试，保存在本机 `.sbc-golden` 目录，默认被 Git 忽略。
 
@@ -74,9 +84,9 @@ sh scripts/login-macos.sh restart
 sh scripts/login-macos.sh uninstall
 ```
 
-脚本安装并管理当前用户 LaunchAgent。`uninstall` 会保留配置、运行文件和日志。日志位于 `~/Library/Logs/AnyKeyMic/run.log`。所有脚本不带参数时输出帮助，`devices`／`configure` 直接转发给主程序。
+脚本安装并管理当前用户 LaunchAgent。`uninstall` 会保留配置、运行文件和日志。日志位于 `~/Library/Logs/AnyKeyMic/run.log`。所有脚本不带参数时输出帮助，`devices`／`configure`／`keymap` 直接转发给主程序。
 
-后台服务需要「输入监控」权限才能打开键盘，否则日志会反复出现 `Cannot open selected HID interface`。临时签名的程序每次重新安装后，都要在「系统设置 › 隐私与安全性 › 输入监控」里重新允许；安装时若把 `ANYKEYMIC_SIGN_IDENTITY` 设为钥匙串中的证书名称（可用 `security find-identity -v -p codesigning` 查询），重新构建后授权仍然有效。
+后台服务需要「输入监控」权限才能打开键盘，否则日志会反复出现 `Cannot open selected HID interface`。配置了 AI 键映射时还需要「辅助功能」权限，缺失时启动日志会给出提示。临时签名的程序每次重新安装后，都要在「系统设置 › 隐私与安全性 › 输入监控」里重新允许；安装时若把 `ANYKEYMIC_SIGN_IDENTITY` 设为钥匙串中的证书名称（可用 `security find-identity -v -p codesigning` 查询），重新构建后授权仍然有效。
 
 以上均为当前用户登录自启，不是系统级服务，不需要管理员权限。Windows 卸载会强制停止匹配安装路径的进程，无法保证停麦命令送达；macOS 停止会卸载当前 LaunchAgent，但保留登录启动配置，下次登录仍会启动。安装会立即启动程序，请先完成 configure 和短时收音测试。Windows 启动项依赖当前仓库中的 scripts 和 dist，移动目录后需要重新安装；更新打包前先执行 stop。
 

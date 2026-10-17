@@ -26,6 +26,12 @@ int am_audio_alive(void);
 void am_audio_close(void);
 int am_process_start(void);
 int am_should_stop(void);
+/* 错误通道共享：写入 am_error 并返回 -1。 */
+int am_set_error(const char *message);
+/* 平台键码合成与捕获；键码即 macOS 虚拟键码或 Windows VK 码。 */
+int am_key_ready(void);
+int am_key_inject(int keycode, int pressed);
+int am_key_capture(int *keycode, int timeout_ms);
 #ifdef __cplusplus
 }
 #endif

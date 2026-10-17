@@ -7,7 +7,7 @@ let package = Package(
     products: [.executable(name: "anykey-mic", targets: ["AnyKeyMic"])],
     targets: [
         .target(name: "MicCore"),
-        .target(name: "CNative", sources: ["native.c", "hid_backend.c", "process.c"],
+        .target(name: "CNative", sources: ["native.c", "hid_backend.c", "process.c", "keyinject.c"],
             publicHeadersPath: "include",
             cSettings: [.headerSearchPath("vendor/hidapi/hidapi")],
             linkerSettings: [
@@ -21,7 +21,8 @@ let package = Package(
                 .linkedFramework("AppKit", .when(platforms: [.macOS])),
                 .linkedFramework("CoreFoundation", .when(platforms: [.macOS])),
                 .linkedFramework("CoreAudio", .when(platforms: [.macOS])),
-                .linkedFramework("AudioToolbox", .when(platforms: [.macOS]))
+                .linkedFramework("AudioToolbox", .when(platforms: [.macOS])),
+                .linkedFramework("ApplicationServices", .when(platforms: [.macOS]))
             ]),
         .executableTarget(name: "AnyKeyMic", dependencies: ["MicCore", "CNative"]),
         .testTarget(name: "MicCoreTests", dependencies: ["MicCore"])
