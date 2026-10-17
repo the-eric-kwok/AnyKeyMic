@@ -39,6 +39,8 @@ anykey-mic run
 Windows：先运行 `scripts/package-windows.ps1`，再使用管理脚本安装当前用户登录自启：
 
 ```powershell
+.\scripts\login-windows.ps1 devices
+.\scripts\login-windows.ps1 configure 2
 .\scripts\login-windows.ps1 install
 .\scripts\login-windows.ps1 status
 .\scripts\login-windows.ps1 start
@@ -49,9 +51,11 @@ Windows：先运行 `scripts/package-windows.ps1`，再使用管理脚本安装�
 
 脚本通过当前用户的启动文件夹创建启动项，并以隐藏窗口运行。运行日志位于 `%LOCALAPPDATA%/AnyKeyMic/run.log`。也兼容旧用法 `-Remove`。首次测试可直接运行 `dist/anykey-mic.exe run`。
 
-macOS：构建并完成 `configure` 后运行：
+macOS：
 
 ```shell
+sh scripts/login-macos.sh devices
+sh scripts/login-macos.sh configure 1
 sh scripts/login-macos.sh install
 sh scripts/login-macos.sh status
 sh scripts/login-macos.sh start
@@ -60,7 +64,9 @@ sh scripts/login-macos.sh restart
 sh scripts/login-macos.sh uninstall
 ```
 
-脚本安装并管理当前用户 LaunchAgent。`uninstall` 会保留配置、运行文件和日志。日志位于 `~/Library/Logs/AnyKeyMic/run.log`。
+脚本安装并管理当前用户 LaunchAgent。`uninstall` 会保留配置、运行文件和日志。日志位于 `~/Library/Logs/AnyKeyMic/run.log`。所有脚本不带参数时输出帮助，`devices`／`configure` 直接转发给主程序。
+
+后台服务需要「输入监控」权限才能打开键盘，否则日志会反复出现 `Cannot open selected HID interface`。临时签名的程序每次重新安装后，都要在「系统设置 › 隐私与安全性 › 输入监控」里重新允许；安装时若把 `ANYKEYMIC_SIGN_IDENTITY` 设为钥匙串中的证书名称（可用 `security find-identity -v -p codesigning` 查询），重新构建后授权仍然有效。
 
 以上均为当前用户登录自启，不是系统级服务，不需要管理员权限。Windows 卸载会强制停止匹配安装路径的进程，无法保证停麦命令送达；macOS 停止会卸载当前 LaunchAgent，但保留登录启动配置，下次登录仍会启动。安装会立即启动程序，请先完成 configure 和短时收音测试。Windows 启动项依赖当前仓库中的 scripts 和 dist，移动目录后需要重新安装；更新打包前先执行 stop。
 

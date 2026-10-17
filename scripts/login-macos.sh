@@ -9,9 +9,36 @@ app_dir="$HOME/Library/Application Support/AnyKeyMic"
 binary="$app_dir/anykey-mic"
 log_dir="$HOME/Library/Logs/AnyKeyMic"
 log_file="$log_dir/run.log"
+root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+
+usage() {
+    cat <<EOF
+用法：$0 <命令>
+  devices              列出输出设备
+  configure <序号>      绑定 devices 列出的虚拟声卡
+  install              构建、安装并启动登录自启服务
+  uninstall            卸载登录自启服务，保留配置与日志
+  start | stop | restart | status
+设置 ANYKEYMIC_SIGN_IDENTITY 为证书名称后，install 会用它签名，重新构建后无需再次授权输入监控。
+EOF
+}
+
+build() {
+    (cd "$root" && swift build -c release --scratch-path build >&2)
+    built_binary="$(cd "$root" && swift build -c release --scratch-path build --show-bin-path | tail -n 1)/anykey-mic"
+    test -x "$built_binary" || { echo '请先成功构建 anykey-mic。' >&2; exit 1; }
+}
 
 unload() {
-    if launchctl print "$service" >/dev/null 2>&1; then launchctl bootout "$service"; fi
+    launchctl print "$service" >/dev/null 2>&1 || return 0
+    launchctl bootout "$service" || true
+    # bootout 返回时服务可能仍在退出，立即 bootstrap 会报 5: Input/output error。
+    for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
+        launchctl print "$service" >/dev/null 2>&1 || return 0
+        sleep 0.5
+    done
+    echo "服务 $label 未能在 10 秒内退出。" >&2
+    exit 1
 }
 
 write_plist() {
@@ -28,16 +55,17 @@ write_plist() {
 }
 
 install_service() {
-    root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
-    bin_dir=$(cd "$root" && swift build -c release --scratch-path build --show-bin-path | tail -n 1)
-    source_binary="$bin_dir/anykey-mic"
-    test -x "$source_binary" || { echo '请先成功构建 anykey-mic。' >&2; exit 1; }
-    mkdir -p "$app_dir"
     test -f "$app_dir/config.json" || { echo '请先执行 configure 配置虚拟声卡。' >&2; exit 1; }
+    build
     unload
-    cp "$source_binary" "$binary"
+    cp "$built_binary" "$binary"
+    if [ -n "${ANYKEYMIC_SIGN_IDENTITY:-}" ]; then
+        codesign -f -s "$ANYKEYMIC_SIGN_IDENTITY" -i "$label" "$binary"
+    else
+        # 临时签名按文件哈希授权，每次覆盖程序后都要重新授予输入监控。
+        echo "提示：程序为临时签名，需在「系统设置 › 隐私与安全性 › 输入监控」中重新允许：$binary"
+    fi
     write_plist
-    unload
     launchctl bootstrap "$domain" "$plist"
     launchctl kickstart "$service"
     echo "已安装并启动登录自启服务：$label"
@@ -74,14 +102,15 @@ uninstall_service() {
     echo '已卸载登录自启服务，配置、运行文件与日志已保留。'
 }
 
-command=${1:-install}
+command=${1:-help}
 case "$command" in
+    devices|configure) build; exec "$built_binary" "$@" ;;
     install) install_service ;;
-    uninstall|remove) uninstall_service ;;
+    uninstall|remove|--remove) uninstall_service ;;
     start) start_service ;;
     stop) stop_service ;;
     restart) stop_service; start_service ;;
     status) status_service ;;
-    --remove) uninstall_service ;;
-    *) echo "用法：$0 {install|uninstall|start|stop|restart|status}" >&2; exit 2 ;;
+    help|-h|--help) usage ;;
+    *) usage >&2; exit 2 ;;
 esac

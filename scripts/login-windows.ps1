@@ -1,6 +1,7 @@
 param(
-    [ValidateSet('install','uninstall','start','stop','restart','status')]
-    [string]$Action = 'install',
+    [ValidateSet('help','devices','configure','install','uninstall','start','stop','restart','status')]
+    [string]$Action = 'help',
+    [string]$Index,
     [switch]$Remove
 )
 $ErrorActionPreference = 'Stop'
@@ -56,7 +57,25 @@ function Show-Status {
     Write-Output ('Binary: ' + $binary)
     Write-Output ('Log: ' + $logFile)
 }
+function Invoke-Binary {
+    if (!(Test-Path -LiteralPath $binary)) { throw 'Run scripts/package-windows.ps1 first.' }
+    & $binary @args
+    exit $LASTEXITCODE
+}
+function Show-Help {
+    Write-Output @"
+Usage: .\scripts\login-windows.ps1 <command>
+  devices              List output devices
+  configure <index>    Bind the virtual audio device listed by devices
+  install              Install and start per-user logon startup
+  uninstall            Remove logon startup, keep config and log
+  start | stop | restart | status
+"@
+}
 switch ($Action) {
+    help { Show-Help }
+    devices { Invoke-Binary devices }
+    configure { if ($Index) { Invoke-Binary configure $Index } else { Invoke-Binary configure } }
     install { Install-Service }
     uninstall { Uninstall-Service }
     start { Start-ServiceProcess }
