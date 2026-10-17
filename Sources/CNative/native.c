@@ -59,9 +59,10 @@ static struct hid_device_info *hid_at(int index) {
     if (index < 0) return NULL;
     for (struct hid_device_info *p = hid_list; p; p = p->next) {
         int known_vendor = p->vendor_id == 0x248a;
-        int bluetooth_product = p->product_id == 0x8243;
-        if ((known_vendor && (p->product_id == 0x8102 || bluetooth_product) && p->usage_page >= 0xff00) ||
-            (bluetooth_product && p->usage_page >= 0xff00)) {
+        int bluetooth_path = p->path && strstr(p->path, "pid&8243") && strstr(p->path, "&col02");
+        int bluetooth_product = p->product_id == 0x8243 || bluetooth_path;
+        if ((known_vendor && p->product_id == 0x8102 && p->usage_page >= 0xff00) ||
+            (bluetooth_product && (p->usage_page >= 0xff00 || bluetooth_path))) {
             if (index-- == 0) return p;
         }
     }
@@ -111,7 +112,8 @@ int am_hid_count(void) {
 }
 int am_hid_product_id(int index) {
     struct hid_device_info *p = hid_at(index);
-    return p ? (int)p->product_id : 0;
+    if (!p) return 0;
+    return p->product_id == 0 && p->path && strstr(p->path, "pid&8243") ? 0x8243 : (int)p->product_id;
 }
 int am_hid_usage_page(int index) { struct hid_device_info *p = hid_at(index); return p ? (int)p->usage_page : 0; }
 const char *am_hid_path(int index) {
