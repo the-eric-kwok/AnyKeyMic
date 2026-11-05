@@ -35,7 +35,7 @@ anykey-mic run
 
 诊断日志会同时记录平台名、进程号、单调时钟、HID 报文类型与间隔、AI 键边沿、映射键注入结果、发送的麦克风命令、SBC 解码耗时、音频设备停止／重路由事件，以及每十秒的样本统计。日志不保存音频内容；键盘报文只记录用于判断按键状态的前 9 字节十六进制摘要。
 
-Windows 运行 `dist\\anykey-mic.exe run --seconds 60`，日志在 `%LOCALAPPDATA%\\AnyKeyMic\\run.log`；macOS 运行 `anykey-mic run --seconds 60`，日志在 `~/Library/Logs/AnyKeyMic/run.log`。两端必须使用同一次构建产生的程序，并在日志中确认 `session_open`、`hid_rx`、`key_inject` 和 `stats` 均存在后再比较吞字现象。若 Windows 显示 `键盘厂商接口数：0`，说明尚未进入可比的设备运行阶段。比较蓝牙常开麦行为时，Windows 使用 `run --seconds 60 --always-on`，并确认日志中的 `session_open` 为 `mode=always_on`。
+前台 `run` 将日志写到标准错误，可以用 `anykey-mic run --seconds 60 2> diagnostic.log` 保存诊断日志。后台 `start` 的日志在 Windows 的 `%LOCALAPPDATA%/AnyKeyMic/run.log` 或 macOS 的 `~/Library/Logs/AnyKeyMic/run.log`，`status` 会显示完整路径。两端应使用同一版本源码构建，并在日志中确认 `session_open`、`hid_rx`、`key_inject` 和 `stats` 均存在后再比较吞字现象。若 Windows 显示 `键盘厂商接口数：0`，说明尚未进入可比的设备运行阶段。比较蓝牙常开麦行为时，使用 `run --seconds 60 --always-on`，并确认日志中的 `session_open` 为 `mode=always_on`。
 
 ### 开麦与停麦
 
@@ -62,45 +62,61 @@ USB 连接下麦克风常开。蓝牙连接下采用按住说话，因为持续�
 
 ## 登录启动
 
-Windows：先运行 `scripts/package-windows.ps1`，再使用管理脚本安装当前用户登录自启：
+两个平台均由 `anykey-mic` 自身完成安装、登录自启注册和后台进程管理，不再需要运行管理脚本。先完成虚拟声卡配置和短时收音测试，再执行 `install`。
+
+Windows：在 Swift／Visual Studio 开发环境中运行 `scripts/package-windows.ps1`，从完整的 `dist` 发布目录安装：
 
 ```powershell
-.\scripts\login-windows.ps1 devices
-.\scripts\login-windows.ps1 configure 2
-.\scripts\login-windows.ps1 install
-.\scripts\login-windows.ps1 status
-.\scripts\login-windows.ps1 start
-.\scripts\login-windows.ps1 stop
-.\scripts\login-windows.ps1 restart
-.\scripts\login-windows.ps1 uninstall
+.\dist\anykey-mic.exe devices | Out-Host
+.\dist\anykey-mic.exe configure 2 | Out-Host
+.\dist\anykey-mic.exe install | Out-Host
+.\dist\anykey-mic.exe status | Out-Host
 ```
 
-脚本通过当前用户的启动文件夹创建启动项，并以隐藏窗口运行。运行日志位于 `%LOCALAPPDATA%/AnyKeyMic/run.log`。也兼容旧用法 `-Remove`。首次测试可直接运行 `dist/anykey-mic.exe run`。
+旧程序占用 `dist` 时，可以用 `scripts/package-windows.ps1 -OutputDirectory build/service-package` 输出到独立目录；安装新版前仍需先退出旧实例。
+
+安装会将程序及同目录 DLL 复制到 `%LOCALAPPDATA%/AnyKeyMic/bin`，并通过原生 Windows API 创建当前用户启动文件夹中的 `AnyKeyMic.lnk`，直接启动该目录下的程序。旧版同名启动项会被替换，之后移动或删除源码仓库不影响运行。Swift 运行库仍需随发布目录分发，不能只复制一个 exe。
+
+若安装工具受到 Windows 应用目录重定向，登录项会使用解析后的实际安装路径。安装后的程序始终读取 `bin` 上一级的 `config.json`，不依赖登录时的环境变量；`status` 显示实际程序与日志路径。
+
+为保证登录启动不闪控制台窗口，Windows 程序使用 GUI 子系统，前台命令会附加调用它的终端并保留重定向。交互式 PowerShell 建议加 `| Out-Host`，确保等待命令完成；交互式 cmd 可用 `start "" /wait anykey-mic.exe <命令>`。脚本或其他程序调用时应等待进程退出并检查退出码。
 
 macOS：
 
 ```shell
-sh scripts/login-macos.sh devices
-sh scripts/login-macos.sh configure 1
-sh scripts/login-macos.sh install
-sh scripts/login-macos.sh status
-sh scripts/login-macos.sh start
-sh scripts/login-macos.sh stop
-sh scripts/login-macos.sh restart
-sh scripts/login-macos.sh uninstall
+swift build -c release --scratch-path build
+build/release/anykey-mic devices
+build/release/anykey-mic configure 1
+build/release/anykey-mic install
+build/release/anykey-mic status
 ```
 
-脚本安装并管理当前用户 LaunchAgent。`uninstall` 会保留配置、运行文件和日志。日志位于 `~/Library/Logs/AnyKeyMic/run.log`。所有脚本不带参数时输出帮助，`devices`／`configure`／`keymap` 直接转发给主程序。
+安装会复制当前二进制到 `~/Library/Application Support/AnyKeyMic/anykey-mic`，生成 `~/Library/LaunchAgents/local.anykeymic.plist`，通过系统 `launchctl` 管理当前用户 LaunchAgent。构建与签名属于发布流程，`install` 不编译源码、不调用签名工具。需要稳定签名身份时，发布前执行 `codesign -f -s "证书名称" -i local.anykeymic <构建产物路径>`，再用该产物安装。
 
-后台服务需要「输入监控」权限才能打开键盘，否则日志会反复出现 `Cannot open selected HID interface`。配置了 AI 键映射时还需要「辅助功能」权限，缺失时启动日志会给出提示。临时签名的程序每次重新安装后，都要在「系统设置 › 隐私与安全性 › 输入监控」里重新允许；安装时若把 `ANYKEYMIC_SIGN_IDENTITY` 设为钥匙串中的证书名称（可用 `security find-identity -v -p codesigning` 查询），重新构建后授权仍然有效。
+macOS 后台服务需要「输入监控」权限才能打开键盘，否则日志会反复出现 `Cannot open selected HID interface`。配置了 AI 键映射时还需要「辅助功能」权限。请对固定安装路径中的程序授权；临时签名的程序更新后通常需要重新允许，使用稳定签名身份可减少重复授权。
 
-以上均为当前用户登录自启，不是系统级服务，不需要管理员权限。Windows 卸载会强制停止匹配安装路径的进程，无法保证停麦命令送达；macOS 停止会卸载当前 LaunchAgent，但保留登录启动配置，下次登录仍会启动。安装会立即启动程序，请先完成 configure 和短时收音测试。Windows 启动项依赖当前仓库中的 scripts 和 dist，移动目录后需要重新安装；更新打包前先执行 stop。
+两端统一支持以下命令，可以从发布目录或固定安装目录调用：
+
+| 命令 | 行为 |
+| --- | --- |
+| `install` | 安装或更新当前构建，注册登录自启并立即启动；要求已有有效配置 |
+| `start` | 启动已安装程序，重复调用不创建第二个实例 |
+| `stop` | 请求退出并等待完成，保留登录自启，下次登录仍会运行 |
+| `restart` | 停止后重新启动，重新读取配置和按键映射 |
+| `status` | 显示安装状态、运行状态、程序及日志路径 |
+| `uninstall` | 取消登录自启并停止，保留程序、配置与日志 |
+
+以上均为当前用户登录自启，不需要管理员权限，也不会注册系统级 Windows Service 或 macOS LaunchDaemon。后台使用内部参数 `run --background`；正常使用请通过 `start` 管理。macOS 由 launchd 在异常退出后重启，Windows 启动项仅在登录时启动，异常退出后需执行 `start`。
+
+Windows 使用命名事件通知当前用户、当前会话的 AnyKeyMic 实例退出，支持正常停麦与释放映射键，也会停止同会话中手动运行的新版 `run`。macOS 使用 `launchctl bootout` 停止受管理的实例，手动运行的 `run` 仍需 Ctrl+C。停止超时会报告错误，不主动强杀。升级前请先退出旧版进程；旧版 Windows 不支持退出通知，新版检测到旧实例会拒绝并行运行。已有旧版 macOS LaunchAgent 会在安装时卸载并更新。
 
 暂未配置日志轮转，长期部署前需要留意日志大小。不要同时运行两个桥接程序。
 
 ## 验证范围
 
 协议单元测试覆盖握手、畸形报文、PCM 小端转换和重连。实机还需要验证持续收音、USB 拔插、睡眠唤醒、虚拟设备消失与恢复。仅编译或枚举成功不代表这些硬件行为已经通过。
+
+Windows 管理功能回归需要 PowerShell 7，可运行 `pwsh -File scripts/test-service-windows.ps1 -Binary dist/anykey-mic.exe`。测试使用仓库内隔离配置和不存在的音频端点，不采集音频；会暂时替换当前用户的同名启动项，退出时恢复。测试前必须停止其他 AnyKeyMic 实例。覆盖无配置拒绝安装、无效参数、完整安装、重复启停、更新安装、日志追加、直接登录入口和卸载保留数据。macOS 仍需在实机验证编译、LaunchAgent 生命周期及隐私授权。
 
 ## 来源与限制
 

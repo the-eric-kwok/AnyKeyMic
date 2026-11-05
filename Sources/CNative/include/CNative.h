@@ -28,6 +28,18 @@ int am_audio_event(void);
 void am_audio_close(void);
 int am_process_start(void);
 int am_should_stop(void);
+#ifdef _WIN32
+/* 当前用户、当前会话的后台管理；失败时写入 am_error。 */
+void am_console_attach(void);
+int am_executable_path(char *buffer, int capacity);
+int am_resolve_path(const char *input, char *buffer, int capacity);
+int am_service_register(const char *executable);
+int am_service_unregister(void);
+int am_service_registered(const char *executable);
+int am_service_start(const char *executable);
+int am_service_running(void);
+int am_service_stop(void);
+#endif
 /* 错误通道共享：写入 am_error 并返回 -1。 */
 int am_set_error(const char *message);
 /* 平台键码合成与捕获；键码即 macOS 虚拟键码或 Windows VK 码。 */

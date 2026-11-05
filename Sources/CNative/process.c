@@ -1,22 +1,5 @@
 #include "CNative.h"
-#ifdef _WIN32
-#include <windows.h>
-static HANDLE instance;
-static volatile LONG stopped;
-static BOOL WINAPI on_signal(DWORD code) {
-    if (code == CTRL_C_EVENT || code == CTRL_BREAK_EVENT || code == CTRL_CLOSE_EVENT) {
-        InterlockedExchange(&stopped, 1); return TRUE;
-    }
-    return FALSE;
-}
-int am_process_start(void) {
-    instance = CreateMutexW(NULL, FALSE, L"Local\\AnyKeyMic-USB");
-    if (!instance || GetLastError() == ERROR_ALREADY_EXISTS) return -1;
-    SetConsoleCtrlHandler(on_signal, TRUE);
-    return 0;
-}
-int am_should_stop(void) { return InterlockedCompareExchange(&stopped, 0, 0); }
-#else
+#ifndef _WIN32
 #include <signal.h>
 #include <sys/file.h>
 #include <unistd.h>

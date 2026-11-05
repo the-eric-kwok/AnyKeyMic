@@ -2,6 +2,10 @@ import Foundation
 import MicCore
 import CNative
 
+#if os(Windows)
+if !CommandLine.arguments.dropFirst().contains("--background") { am_console_attach() }
+#endif
+
 struct Settings: Codable {
     let outputID: String
     let outputName: String
@@ -25,6 +29,7 @@ struct Failure: Error, CustomStringConvertible { let description: String }
 func nativeError() -> Failure { Failure(description: String(cString: am_error())) }
 private let logLock = NSLock()
 private var logSequence = 0
+private var logOutput = FileHandle.standardError
 private let logDateFormatter: ISO8601DateFormatter = {
     let formatter = ISO8601DateFormatter()
     formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
@@ -44,7 +49,7 @@ func log(_ message: String) {
     defer { logLock.unlock() }
     logSequence += 1
     let line = "\(logDateFormatter.string(from: Date())) seq=\(logSequence) mono=\(String(format: "%.6f", now())) pid=\(ProcessInfo.processInfo.processIdentifier) \(message)\n"
-    FileHandle.standardError.write(Data(line.utf8))
+    logOutput.write(Data(line.utf8))
 }
 func now() -> Double { ProcessInfo.processInfo.systemUptime }
 func hex(_ bytes: ArraySlice<UInt8>) -> String {
@@ -69,6 +74,14 @@ func isVirtual(_ name: String) -> Bool {
 }
 func configurationURL() -> URL {
     #if os(Windows)
+    // 固定安装目录使用相邻配置，登录时不依赖安装工具的 MSIX 路径重定向。
+    if let executable = try? ServiceManager.currentExecutable() {
+        let bin = executable.deletingLastPathComponent()
+        let data = bin.deletingLastPathComponent()
+        if bin.lastPathComponent.lowercased() == "bin", data.lastPathComponent.lowercased() == "anykeymic" {
+            return data.appendingPathComponent("config.json")
+        }
+    }
     let base = ProcessInfo.processInfo.environment["LOCALAPPDATA"] ?? FileManager.default.homeDirectoryForCurrentUser.path
     #else
     let base = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support").path
@@ -312,7 +325,10 @@ func run(settings: Settings, duration: Double?, forceAlwaysOn: Bool) {
 do {
     let arguments = Array(CommandLine.arguments.dropFirst())
     let action = arguments.first ?? "help"
-    if action == "devices" || action == "configure" {
+    if ServiceManager.commands.contains(action) {
+        guard arguments.count == 1 else { throw Failure(description: "\(action) 不接受额外参数。") }
+        try ServiceManager.perform(action)
+    } else if action == "devices" || action == "configure" {
         guard am_init() == 0 else { throw nativeError() }
         defer { am_shutdown() }
         if action == "devices" { printDevices() }
@@ -372,6 +388,7 @@ do {
     } else if action == "run" {
         var duration: Double?
         var forceAlwaysOn = false
+        let background = arguments.contains("--background")
         var index = 1
         while index < arguments.count {
             switch arguments[index] {
@@ -384,12 +401,17 @@ do {
             case "--always-on":
                 forceAlwaysOn = true
                 index += 1
+            case "--background":
+                index += 1
             default:
                 throw Failure(description: "用 run、run --seconds 60 或 run --seconds 60 --always-on 启动。")
             }
         }
+        guard am_process_start() == 0 else {
+            throw Failure(description: "已有 AnyKeyMic 正在运行，或无法取得单实例锁：\(nativeError())")
+        }
+        if background { logOutput = try ServiceManager.openLog() }
         let settings = try JSONDecoder().decode(Settings.self, from: Data(contentsOf: configurationURL()))
-        guard am_process_start() == 0 else { throw Failure(description: "已有 AnyKeyMic 正在运行，或无法取得单实例锁。") }
         run(settings: settings, duration: duration, forceAlwaysOn: forceAlwaysOn)
     } else {
         print("""
@@ -398,8 +420,13 @@ do {
           configure <序号>        绑定虚拟声卡
           keymap [none|test]     交互捕获 AI 键映射的目标按键；none 清除；test 试注入一次
           run [--seconds <秒>] [--always-on]    桥接并持续重连；诊断时可强制蓝牙常开麦
+          install                安装到固定用户目录、注册登录自启并启动
+          uninstall              取消登录自启并停止，保留程序、配置与日志
+          start | stop | restart 管理后台进程；stop 保留登录自启
+          status                 查看安装状态、运行状态与日志路径
         配置 keymap 后，按住 AI 键会同时按下映射键（如 fn、右 Ctrl），用于触发输入法的语音输入。运行前退出 AnyKey AI，避免两个程序争用键盘。
         """)
+        if !["help", "--help", "-h"].contains(action) { throw Failure(description: "未知命令：\(action)") }
     }
 } catch {
     log(String(describing: error))

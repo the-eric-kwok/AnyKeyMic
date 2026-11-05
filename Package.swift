@@ -7,7 +7,7 @@ let package = Package(
     products: [.executable(name: "anykey-mic", targets: ["AnyKeyMic"])],
     targets: [
         .target(name: "MicCore"),
-        .target(name: "CNative", sources: ["native.c", "hid_backend.c", "process.c", "keyinject.c"],
+        .target(name: "CNative", sources: ["native.c", "hid_backend.c", "process.c", "service_windows.c", "keyinject.c"],
             publicHeadersPath: "include",
             cSettings: [.headerSearchPath("vendor/hidapi/hidapi")],
             linkerSettings: [
@@ -17,6 +17,7 @@ let package = Package(
                 .linkedLibrary("user32", .when(platforms: [.windows])),
                 .linkedLibrary("advapi32", .when(platforms: [.windows])),
                 .linkedLibrary("shell32", .when(platforms: [.windows])),
+                .linkedLibrary("uuid", .when(platforms: [.windows])),
                 .linkedFramework("IOKit", .when(platforms: [.macOS])),
                 .linkedFramework("AppKit", .when(platforms: [.macOS])),
                 .linkedFramework("CoreFoundation", .when(platforms: [.macOS])),
@@ -24,7 +25,9 @@ let package = Package(
                 .linkedFramework("AudioToolbox", .when(platforms: [.macOS])),
                 .linkedFramework("ApplicationServices", .when(platforms: [.macOS]))
             ]),
-        .executableTarget(name: "AnyKeyMic", dependencies: ["MicCore", "CNative"]),
+        .executableTarget(name: "AnyKeyMic", dependencies: ["MicCore", "CNative"],
+            linkerSettings: [.unsafeFlags(["-Xlinker", "/SUBSYSTEM:WINDOWS", "-Xlinker", "/ENTRY:mainCRTStartup"],
+                                          .when(platforms: [.windows]))]),
         .testTarget(name: "MicCoreTests", dependencies: ["MicCore"])
     ],
     swiftLanguageModes: [.v5],
