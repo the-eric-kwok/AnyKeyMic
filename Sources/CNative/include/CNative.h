@@ -36,6 +36,8 @@ int am_resolve_path(const char *input, char *buffer, int capacity);
 int am_service_register(const char *executable);
 int am_service_unregister(void);
 int am_service_registered(const char *executable);
+/* 返回 1 表示找到原生登录项，0 表示未安装，-1 表示失败。 */
+int am_service_executable_path(char *buffer, int capacity);
 int am_service_start(const char *executable);
 int am_service_running(void);
 int am_service_stop(void);

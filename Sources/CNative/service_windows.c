@@ -253,9 +253,15 @@ void am_console_attach(void) {
             continue;
         }
         if (!handles[i]) continue;
+        // freopen 后 FILE 可能使用 fd3 等新描述符，不能假定仍是 fd0／1／2。
+        int target = _fileno(streams[i]);
         int fd = _open_osfhandle((intptr_t)handles[i], _O_BINARY | (i == 0 ? _O_RDONLY : _O_WRONLY));
         if (fd < 0) { CloseHandle(handles[i]); continue; }
-        if (fd != i) { _dup2(fd, i); _close(fd); }
+        int result = _dup2(fd, target);
+        // Swift print 使用 FILE，Foundation FileHandle 使用固定的 fd0／1／2。
+        if (result == 0 && target != i) result = _dup2(fd, i);
+        if (fd != target && fd != i) _close(fd);
+        if (result != 0) continue;
         SetStdHandle(ids[i], (HANDLE)_get_osfhandle(i));
     }
 }
@@ -298,15 +304,15 @@ static int shortcut_path(wchar_t *path) {
     return count > 0 && count < PATH_CAPACITY ? 0 : am_set_error("Startup path is too long.");
 }
 
-static int shortcut(const char *executable, int install) {
+static int shortcut(const char *executable, int install, char *resolved, int capacity) {
     wchar_t path[PATH_CAPACITY];
     if (shortcut_path(path) != 0) return -1;
     if (!install && GetFileAttributesW(path) == INVALID_FILE_ATTRIBUTES) {
         DWORD error = GetLastError();
         return error == ERROR_FILE_NOT_FOUND || error == ERROR_PATH_NOT_FOUND ? 0 : windows_error("Inspect Startup shortcut", error);
     }
-    wchar_t *binary = wide_path(executable);
-    if (!binary) return -1;
+    wchar_t *binary = executable ? wide_path(executable) : NULL;
+    if (executable && !binary) return -1;
     HRESULT initialized = CoInitializeEx(NULL, COINIT_APARTMENTTHREADED);
     if (FAILED(initialized) && initialized != RPC_E_CHANGED_MODE) { free(binary); return windows_error("Initialize COM", (DWORD)initialized); }
     IShellLinkW *link = NULL;
@@ -324,7 +330,11 @@ static int shortcut(const char *executable, int install) {
         wchar_t target[PATH_CAPACITY], arguments[128];
         if (SUCCEEDED(result)) result = IShellLinkW_GetPath(link, target, PATH_CAPACITY, NULL, SLGP_RAWPATH);
         if (SUCCEEDED(result)) result = IShellLinkW_GetArguments(link, arguments, 128);
-        if (SUCCEEDED(result)) registered = !_wcsicmp(binary, target) && !wcscmp(arguments, L"run --background");
+        if (SUCCEEDED(result) && !wcscmp(arguments, L"run --background")) {
+            if (binary) registered = !_wcsicmp(binary, target);
+            else if (capacity > 0 && WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, target, -1, resolved, capacity, NULL, NULL)) registered = 1;
+            else result = HRESULT_FROM_WIN32(GetLastError());
+        }
     }
     if (file) IPersistFile_Release(file);
     if (link) IShellLinkW_Release(link);
@@ -334,8 +344,9 @@ static int shortcut(const char *executable, int install) {
     return install ? 0 : registered;
 }
 
-int am_service_register(const char *executable) { return shortcut(executable, 1); }
-int am_service_registered(const char *executable) { return shortcut(executable, 0); }
+int am_service_register(const char *executable) { return shortcut(executable, 1, NULL, 0); }
+int am_service_registered(const char *executable) { return shortcut(executable, 0, NULL, 0); }
+int am_service_executable_path(char *buffer, int capacity) { return shortcut(NULL, 0, buffer, capacity); }
 int am_service_unregister(void) {
     wchar_t path[PATH_CAPACITY];
     if (shortcut_path(path) != 0) return -1;

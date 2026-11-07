@@ -6,7 +6,7 @@ public enum KeyNames {
     public static let escapeCode: Int32 = 0x1b
     private static let known: [Int32: String] = [
         0x1b: "Esc",
-        0x5b: "左 Win", 0xa7: "右 Win",
+        0x5b: "左 Win", 0x5c: "右 Win",
         0xa0: "左 Shift", 0xa1: "右 Shift",
         0xa2: "左 Ctrl", 0xa3: "右 Ctrl",
         0xa4: "左 Alt", 0xa5: "右 Alt",

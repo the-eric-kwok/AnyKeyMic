@@ -6,6 +6,7 @@ $projectRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
 $testRoot = Join-Path $projectRoot ('build/服务管理 smoke ' + [Guid]::NewGuid().ToString('N'))
 $startupLink = Join-Path ([Environment]::GetFolderPath('Startup')) 'AnyKeyMic.lnk'
 $oldLocalAppData = $env:LOCALAPPDATA
+$oldConfig = $env:ANYKEYMIC_CONFIG
 $backupLink = Join-Path $testRoot 'original.lnk'
 $hadShortcut = Test-Path -LiteralPath $startupLink
 $testActive = $false
@@ -56,6 +57,7 @@ try {
     $configDir = Join-Path $testRoot 'AnyKeyMic'
     $installed = Join-Path $configDir 'bin/anykey-mic.exe'
     $config = Join-Path $configDir 'config.json'
+    $env:ANYKEYMIC_CONFIG = $config
     $log = Join-Path $configDir 'run.log'
 
     Assert-Contains (Invoke-Mic @('help')) 'install'
@@ -75,6 +77,24 @@ try {
     $state = Invoke-Mic @('status')
     Assert-Contains $state '已安装：是'
     Assert-Contains $state '正在运行：是'
+    Assert-Contains (Invoke-Mic @('mode')) 'auto'
+    Assert-Contains (Invoke-Mic @('mode', 'always-on')) 'always-on'
+    Assert-Contains (Invoke-Mic @('keymap', '163')) '右 Ctrl'
+    $deadline = [DateTime]::UtcNow.AddSeconds(5)
+    do {
+        Start-Sleep -Milliseconds 100
+        $stream = [IO.File]::Open($log, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::ReadWrite)
+        $reader = [IO.StreamReader]::new($stream)
+        try { $applied = $reader.ReadToEnd() }
+        finally { $reader.Dispose() }
+    } while (!$applied.Contains('settings_applied mode=always-on mappedKey=163') -and [DateTime]::UtcNow -lt $deadline)
+    Assert-Contains $applied 'settings_applied mode=always-on mappedKey=163'
+    Assert-Contains (Invoke-Mic @('mode', 'push-to-talk')) 'push-to-talk'
+    Assert-Contains (Invoke-Mic @('keymap', 'status')) '右 Ctrl'
+    Assert-Contains (Invoke-Mic @('keymap', 'none')) '未映射'
+    Assert-Contains (Invoke-Mic @('mode')) 'push-to-talk'
+    Assert-Contains (Invoke-Mic @('mode', 'invalid') 1) '模式必须是'
+    Assert-Contains (Invoke-Mic @('run', '--always-on', '--push-to-talk') 1) '只能选择一个'
     Assert-Contains (Invoke-Mic @('start')) '后台进程已启动'
     $instances = @(Get-Process anykey-mic -ErrorAction SilentlyContinue | Where-Object { $_.Path -eq $installed })
     if ($instances.Count -ne 1 -or $instances[0].MainWindowHandle -ne 0) { throw '重复启动或创建了主窗口。' }
@@ -89,9 +109,13 @@ try {
     # 登录启动可能不继承安装工具的目录重定向，安装后的 CLI 应使用相邻配置。
     try {
         $env:LOCALAPPDATA = Join-Path $testRoot 'different-environment'
+        Remove-Item Env:ANYKEYMIC_CONFIG
         Assert-Contains (Invoke-Mic @('status') 0 $installed) '已安装：是'
         Assert-Contains (Invoke-Mic @('start') 0 $installed) '后台进程已启动'
-    } finally { $env:LOCALAPPDATA = $testRoot }
+        Assert-Contains (Invoke-Mic @('keymap', 'status')) ($config.Replace('\', '/'))
+        Assert-Contains (Invoke-Mic @('mode', 'auto')) 'auto'
+        if ((Get-Content -LiteralPath $config -Raw | ConvertFrom-Json).mode -ne 'auto') { throw '发布目录未使用已安装实例的配置。' }
+    } finally { $env:LOCALAPPDATA = $testRoot; $env:ANYKEYMIC_CONFIG = $config }
     Assert-Contains (Invoke-Mic @('stop')) '已停止运行'
     Assert-Contains (Invoke-Mic @('stop')) '已停止运行'
     $state = Invoke-Mic @('status')
@@ -134,6 +158,7 @@ try {
             if ($hadShortcut) { Copy-Item -LiteralPath $backupLink -Destination $startupLink -Force }
             elseif (Test-Path -LiteralPath $startupLink) { Remove-Item -LiteralPath $startupLink }
             $env:LOCALAPPDATA = $oldLocalAppData
+            $env:ANYKEYMIC_CONFIG = $oldConfig
         }
     }
 }

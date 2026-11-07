@@ -39,20 +39,33 @@ anykey-mic run
 
 ### 开麦与停麦
 
-USB 连接下麦克风常开。蓝牙连接下采用按住说话，因为持续推流会占满蓝牙带宽，导致键盘丢字：
+用 `mode` 查询或保存开麦方式，前台和后台程序都会自动重读配置：
+
+```shell
+anykey-mic mode
+anykey-mic mode always-on
+anykey-mic mode push-to-talk
+anykey-mic mode auto
+```
+
+`always-on` 为常开麦，`push-to-talk` 为按住 AI 键说话，两种选择都适用于 USB 和蓝牙。`auto` 是默认值，旧配置缺少模式字段时也使用它：Windows 的 USB 和蓝牙均常开麦；macOS 的 USB 常开麦、蓝牙按键开麦。蓝牙常开会持续占用带宽，可能导致键盘丢字。按键开麦模式的操作如下：
 
 - **开麦**：按住键盘上的 AI 键。
 - **停麦方式一**：松开 AI 键。日志记为 `AI 键松开：停麦。`
 - **停麦方式二**：开麦期间按下其他任意键（含右 Ctrl 等修饰键）。推流时 AI 键的松开报告可能丢失，开始打字即视为已松开。日志记为 `按键停麦，报告：…`，附触发停麦的键盘报告。
 
-服务启动和断线重连后均为停麦状态。需要输入法语音输入与开麦一并触发时，用下方「AI 键映射」配置，不要依赖单独按热键。
+按键开麦模式在启动和断线重连后均为停麦状态；暂停时不再输出收到的 SBC 或 PCM 音频。常开模式则会自动开始推流。`run --always-on` 或 `run --push-to-talk` 只覆盖本次运行，不修改保存的模式；两者不能同时指定。需要输入法语音输入与开麦一并触发时，用下方「AI 键映射」配置。
 
 ### AI 键映射
 
-按住 AI 键开麦的同时，桥接程序会向系统合成注入一个映射键，把输入法的语音输入热键设为该键后，只按 AI 键即可一并唤起语音输入。运行 `anykey-mic keymap` 交互捕获目标按键（macOS 常用 fn 键，Windows 常用右 Ctrl），按 Esc 取消；`anykey-mic keymap test` 会注入一次按下与松开，用于立刻验证输入法是否响应；`anykey-mic keymap none` 清除映射。映射以平台键码存入 config.json，`configure` 重新绑定声卡时会保留。
+按住 AI 键开麦的同时，桥接程序会向系统合成注入一个映射键，把输入法的语音输入热键设为该键后，只按 AI 键即可一并唤起语音输入。运行 `anykey-mic keymap` 交互捕获目标按键（macOS 常用 fn 键，Windows 常用右 Ctrl），按 Esc 取消；`keymap status` 查询当前映射和配置路径，`keymap test` 注入一次按下与松开，`keymap none` 清除映射。也可以用 `keymap <十进制键码>` 直接设置，例如 Windows 的右 Ctrl 是 `keymap 163`，macOS 的 fn 是 `keymap 63`。
+
+映射和模式写入同一份 `config.json`，`configure` 重绑声卡时保留两者。运行中的新版约每半秒检查配置变化，先结束旧会话并松开映射键，再使用新配置建立会话，无需手动重启；暂时无法读取或解析配置时继续使用最后生效的配置。`status` 会显示保存的模式、映射及配置路径，日志的 `settings_applied` 表示已应用。
+
+Windows 从发布目录执行配置命令时会跟随原生登录启动项，使用已安装程序的配置，避免不同终端的 AppData 重定向导致配置分叉。需要独立配置或运行测试时，可设置 `ANYKEYMIC_CONFIG` 为配置文件的完整路径。
 
 - 松开 AI 键或打字停麦时同步松开映射键；断线重连和程序退出也会自动松开，不会粘键。
-- 蓝牙按住说话与 USB 常开两种模式都生效：常开模式下按 AI 键只注入映射键，不影响持续收音。
+- 常开和按键开麦模式均支持映射：常开模式下按 AI 键只注入映射键，不影响持续收音。
 - macOS 注入需要「系统设置 › 隐私与安全性 › 辅助功能」权限（捕获沿用「输入监控」），缺失时启动日志会提示；Windows 无需额外权限。
 - fn 键在 Windows 上没有标准键码，无法捕获或注入，属系统限制。macOS 听写若设为「按两次 fn」，需快速按两次 AI 键触发。
 
@@ -102,7 +115,7 @@ macOS 后台服务需要「输入监控」权限才能打开键盘，否则日�
 | `install` | 安装或更新当前构建，注册登录自启并立即启动；要求已有有效配置 |
 | `start` | 启动已安装程序，重复调用不创建第二个实例 |
 | `stop` | 请求退出并等待完成，保留登录自启，下次登录仍会运行 |
-| `restart` | 停止后重新启动，重新读取配置和按键映射 |
+| `restart` | 停止后重新启动；新版配置变更也会在运行中自动应用 |
 | `status` | 显示安装状态、运行状态、程序及日志路径 |
 | `uninstall` | 取消登录自启并停止，保留程序、配置与日志 |
 
@@ -117,6 +130,8 @@ Windows 使用命名事件通知当前用户、当前会话的 AnyKeyMic 实例�
 协议单元测试覆盖握手、畸形报文、PCM 小端转换和重连。实机还需要验证持续收音、USB 拔插、睡眠唤醒、虚拟设备消失与恢复。仅编译或枚举成功不代表这些硬件行为已经通过。
 
 Windows 管理功能回归需要 PowerShell 7，可运行 `pwsh -File scripts/test-service-windows.ps1 -Binary dist/anykey-mic.exe`。测试使用仓库内隔离配置和不存在的音频端点，不采集音频；会暂时替换当前用户的同名启动项，退出时恢复。测试前必须停止其他 AnyKeyMic 实例。覆盖无配置拒绝安装、无效参数、完整安装、重复启停、更新安装、日志追加、直接登录入口和卸载保留数据。macOS 仍需在实机验证编译、LaunchAgent 生命周期及隐私授权。
+
+该回归同时检查模式与映射保存、字段保留和后台自动应用。`Tests/CNativeTests/keyinject_windows_tests.c` 使用桩替换桌面输入 API，可在 Visual Studio 开发环境中用 `clang-cl /MD /W4 /I Sources/CNative/include Tests/CNativeTests/keyinject_windows_tests.c /Fobuild/keyinject_windows_tests.obj /Febuild/keyinject_windows_tests.exe` 编译并运行，不会向桌面发送按键。
 
 ## 来源与限制
 

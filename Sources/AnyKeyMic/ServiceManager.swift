@@ -185,6 +185,7 @@ enum ServiceManager {
             #else
             print(try MacService.status())
             #endif
+            if let settings = try? readSettings() { printSettings(settings) }
         default: preconditionFailure("未知管理命令")
         }
         print("程序：\(executable.path)\n日志：\(logURL.path)")

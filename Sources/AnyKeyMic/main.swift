@@ -6,25 +6,7 @@ import CNative
 if !CommandLine.arguments.dropFirst().contains("--background") { am_console_attach() }
 #endif
 
-struct Settings: Codable {
-    let outputID: String
-    let outputName: String
-    /// AI 键映射的平台键码（macOS 虚拟键码／Windows VK 码），nil 表示不映射。
-    var aiKeyMap: Int32?
-
-    init(outputID: String, outputName: String, aiKeyMap: Int32? = nil) {
-        self.outputID = outputID
-        self.outputName = outputName
-        self.aiKeyMap = aiKeyMap
-    }
-
-    init(from decoder: Decoder) throws {
-        let values = try decoder.container(keyedBy: CodingKeys.self)
-        outputID = try values.decode(String.self, forKey: .outputID)
-        outputName = try values.decode(String.self, forKey: .outputName)
-        aiKeyMap = try values.decodeIfPresent(Int32.self, forKey: .aiKeyMap)
-    }
-}
+typealias Settings = MicSettings
 struct Failure: Error, CustomStringConvertible { let description: String }
 func nativeError() -> Failure { Failure(description: String(cString: am_error())) }
 private let logLock = NSLock()
@@ -73,6 +55,9 @@ func isVirtual(_ name: String) -> Bool {
     return name.contains("cable input") || name.contains("blackhole")
 }
 func configurationURL() -> URL {
+    if let path = ProcessInfo.processInfo.environment["ANYKEYMIC_CONFIG"], !path.isEmpty {
+        return URL(fileURLWithPath: path)
+    }
     #if os(Windows)
     // 固定安装目录使用相邻配置，登录时不依赖安装工具的 MSIX 路径重定向。
     if let executable = try? ServiceManager.currentExecutable() {
@@ -80,6 +65,17 @@ func configurationURL() -> URL {
         let data = bin.deletingLastPathComponent()
         if bin.lastPathComponent.lowercased() == "bin", data.lastPathComponent.lowercased() == "anykeymic" {
             return data.appendingPathComponent("config.json")
+        }
+    }
+    // 从发布目录配置时也跟随已安装实例，避免不同终端的 AppData 重定向产生两份配置。
+    var installedPath = [CChar](repeating: 0, count: 131_072)
+    if am_service_executable_path(&installedPath, Int32(installedPath.count)) == 1 {
+        let installed = URL(fileURLWithPath: String(cString: installedPath))
+        let bin = installed.deletingLastPathComponent()
+        if installed.lastPathComponent.lowercased() == "anykey-mic.exe",
+           bin.lastPathComponent.lowercased() == "bin",
+           bin.deletingLastPathComponent().lastPathComponent.lowercased() == "anykeymic" {
+            return bin.deletingLastPathComponent().appendingPathComponent("config.json")
         }
     }
     let base = ProcessInfo.processInfo.environment["LOCALAPPDATA"] ?? FileManager.default.homeDirectoryForCurrentUser.path
@@ -91,6 +87,17 @@ func configurationURL() -> URL {
 func saveSettings(_ settings: Settings, to url: URL) throws {
     try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
     try JSONEncoder().encode(settings).write(to: url, options: .atomic)
+}
+func readSettings(from url: URL = configurationURL()) throws -> Settings {
+    try JSONDecoder().decode(Settings.self, from: Data(contentsOf: url))
+}
+func printSettings(_ settings: Settings, at url: URL = configurationURL()) {
+    print("已保存开麦模式：\(settings.mode.displayName)（\(settings.mode.rawValue)）")
+    print("AI 键映射：\(settings.aiKeyMap.map { "\(KeyNames.name($0))（键码 \($0)）" } ?? "未映射")")
+    print("配置：\(url.path)")
+}
+func settingsSaved() {
+    print("已保存，正在运行的新版程序会自动应用；旧版程序需更新并重启。")
 }
 func printDevices() {
     for i in 0..<max(0, am_output_count()) {
@@ -126,33 +133,60 @@ func probeHID(seconds: Double) throws {
     }
     print("探针结束：\(packets) 个报文。")
 }
-func run(settings: Settings, duration: Double?, forceAlwaysOn: Bool) {
+func run(settings initial: Settings, duration: Double?, modeOverride: MicMode?) {
     let deadline = duration.map { now() + $0 }
     var attempt = 0
     var candidate = 0
     var lastProblem = ""
-    let mapped = settings.aiKeyMap
+    var settings = initial
+    var mapped = settings.aiKeyMap
+    let configURL = configurationURL()
+    var pendingSettings: Settings?
+    var checkSettingsAt = now()
+    var lastConfigError = ""
     var keyHeld = false
-    var keyBroken = false
-    log("process_start platform=\(platformName()) mode=diagnostic mappedKey=\(mapped.map { "\($0):\(KeyNames.name($0))" } ?? "none")")
-    func injectKey(_ pressed: Bool) {
-        guard let mapped, !keyBroken, pressed != keyHeld else { return }
+    log("process_start platform=\(platformName()) configuredMode=\(settings.mode.rawValue) override=\(modeOverride?.rawValue ?? "none") mappedKey=\(mapped.map { "\($0):\(KeyNames.name($0))" } ?? "none") config=\(configURL.path)")
+    @discardableResult func injectKey(_ pressed: Bool) -> Bool {
+        guard let mapped, pressed != keyHeld else { return true }
         log("key_inject request platform=\(platformName()) key=\(KeyNames.name(mapped)) code=\(mapped) pressed=\(pressed) heldBefore=\(keyHeld)")
         guard am_key_inject(mapped, pressed ? 1 : 0) == 0 else {
-            keyBroken = true
-            keyHeld = false
             log("key_inject result=error error=\(String(cString: am_error()))")
-            return
+            return false
         }
         keyHeld = pressed
         log("key_inject result=ok heldAfter=\(keyHeld)")
+        return true
     }
-    if let mapped {
-        if am_key_ready() != 0 { log("AI 键映射不可用：\(String(cString: am_error()))") }
-        log("AI 键映射已启用：\(KeyNames.name(mapped))（键码 \(mapped)）。")
+    func reportSettings() {
+        log("settings_applied mode=\(settings.mode.rawValue) mappedKey=\(mapped.map { "\($0):\(KeyNames.name($0))" } ?? "none")")
+        if mapped != nil, am_key_ready() != 0 { log("AI 键映射不可用：\(String(cString: am_error()))") }
     }
+    func configurationChanged() -> Bool {
+        guard now() >= checkSettingsAt else { return false }
+        checkSettingsAt = now() + 0.5
+        do {
+            let latest = try readSettings(from: configURL)
+            lastConfigError = ""
+            if latest != settings { pendingSettings = latest; return true }
+        } catch {
+            let message = String(describing: error)
+            if message != lastConfigError {
+                log("settings_reload_failed error=\(message)；继续使用已生效配置。")
+                lastConfigError = message
+            }
+        }
+        return false
+    }
+    reportSettings()
     defer { injectKey(false) }
     while am_should_stop() == 0 && (deadline == nil || now() < deadline!) {
+        if let updated = pendingSettings {
+            guard injectKey(false) else { Thread.sleep(forTimeInterval: 0.2); continue }
+            settings = updated
+            mapped = updated.aiKeyMap
+            pendingSettings = nil
+            reportSettings()
+        }
         do {
             guard am_init() == 0 else { throw nativeError() }
             defer { am_shutdown() }
@@ -171,7 +205,7 @@ func run(settings: Settings, duration: Double?, forceAlwaysOn: Bool) {
             let isBluetooth = am_hid_product_id(index) == 0x8243
             let reportLength = isBluetooth ? 62 : 64
             candidate += 1
-            let pushToTalk = isBluetooth && !forceAlwaysOn
+            let pushToTalk = (modeOverride ?? settings.mode).usesPushToTalk(isBluetooth: isBluetooth)
             log("session_open platform=\(platformName()) hidIndex=\(index) pid=\(String(format: "0x%04X", am_hid_product_id(index))) usage=\(String(format: "0x%04X", am_hid_usage_page(index))) reportLength=\(reportLength) outputID=\(settings.outputID) outputName=\(settings.outputName) mode=\(pushToTalk ? "push_to_talk" : "always_on")")
             guard am_audio_open(output) == 0 else { throw nativeError() }
             guard am_hid_open(index) == 0 else { throw nativeError() }
@@ -201,6 +235,7 @@ func run(settings: Settings, duration: Double?, forceAlwaysOn: Bool) {
             var lastKeyboardReport: [UInt8]?
             log("session_ready state=\(session.debugState) output=\(settings.outputName)")
             while am_should_stop() == 0 && (deadline == nil || now() < deadline!) {
+                if configurationChanged() { break }
                 let audioEvent = am_audio_event()
                 if audioEvent != 0 {
                     audioEvents += 1
@@ -238,7 +273,11 @@ func run(settings: Settings, duration: Double?, forceAlwaysOn: Bool) {
                             log("hid_rx seq=\(rxSequence) kind=unknown len=\(length) dtMs=\(String(format: "%.3f", delta)) head=\(hex(packet.prefix(16)))")
                         }
                     }
-                    if packet.first == 0x1b, let frames = MicProtocol.bluetoothFrames(packet) {
+                    let previousState = session.debugState
+                    let acceptedAudio = session.acceptsAudio
+                    let commands = session.receive(packet, now: time)
+                    if acceptedAudio && !session.acceptsAudio { swiftSbc.reset() }
+                    if session.acceptsAudio, packet.first == 0x1b, let frames = MicProtocol.bluetoothFrames(packet) {
                         let decodeStarted = now()
                         let pcm: [Int16]
                         do {
@@ -256,8 +295,6 @@ func run(settings: Settings, duration: Double?, forceAlwaysOn: Bool) {
                         for value in pcm { peak = max(peak, abs(Int(value))) }
                         if !announced { log("已自动开麦，Swift SBC 解码正常。"); announced = true; attempt = 0; lastProblem = "" }
                     }
-                    let previousState = session.debugState
-                    let commands = session.receive(packet, now: time)
                     if let keyState = MicProtocol.aiKeyState(packet) {
                         log("ai_key state=\(keyState ? "down" : "up") seq=\(rxSequence) session=\(session.debugState)")
                     }
@@ -272,17 +309,17 @@ func run(settings: Settings, duration: Double?, forceAlwaysOn: Bool) {
                         switch session.lastTrigger {
                         case .aiPressed:
                             injectKey(true)
-                            log(isBluetooth ? "AI 键按下：开麦\(downNote)。" : "AI 键按下\(downNote)。")
+                            log(pushToTalk ? "AI 键按下：开麦\(downNote)。" : "AI 键按下\(downNote)。")
                         case .aiReleased:
                             injectKey(false)
-                            log(isBluetooth ? "AI 键松开：停麦\(upNote)。" : "AI 键松开\(upNote)。")
+                            log(pushToTalk ? "AI 键松开：停麦\(upNote)。" : "AI 键松开\(upNote)。")
                         case .keyPressed(let report):
                             injectKey(false)
                             log("按键停麦，报告：" + report.map { String(format: "%02X", $0) }.joined(separator: " ") + "\(upNote)。")
                         case nil: break
                         }
                     }
-                    if session.isReady, let pcm = MicProtocol.pcm(packet) {
+                    if session.acceptsAudio, let pcm = MicProtocol.pcm(packet) {
                         let accepted = pcm.withUnsafeBufferPointer { am_audio_push($0.baseAddress, Int32($0.count)) }
                         guard accepted >= 0 else { throw nativeError() }
                         samples += pcm.count
@@ -313,9 +350,11 @@ func run(settings: Settings, duration: Double?, forceAlwaysOn: Bool) {
             injectKey(false)
         }
         if am_should_stop() != 0 { break }
+        if pendingSettings != nil { continue }
         attempt = min(attempt + 1, 4)
         let retryAt = now() + min(pow(2, Double(attempt)), 15)
         while now() < retryAt && am_should_stop() == 0 && (deadline == nil || now() < deadline!) {
+            if configurationChanged() { break }
             Thread.sleep(forTimeInterval: 0.1)
         }
     }
@@ -342,20 +381,34 @@ do {
             let url = configurationURL()
             let existing = (try? Data(contentsOf: url)).flatMap { try? JSONDecoder().decode(Settings.self, from: $0) }
             let settings = Settings(outputID: String(cString: am_output_id(index)), outputName: name,
-                                    aiKeyMap: existing?.aiKeyMap)
+                                    aiKeyMap: existing?.aiKeyMap, mode: existing?.mode ?? .auto)
             try saveSettings(settings, to: url)
             print("已绑定：\(name)\n配置：\(url.path)")
+            settingsSaved()
         }
     } else if action == "probe" {
         let seconds = arguments.count == 3 && arguments[1] == "--seconds" ? (Double(arguments[2]) ?? 10) : 10
         try probeHID(seconds: seconds)
+    } else if action == "mode" {
+        let url = configurationURL()
+        var settings = try readSettings(from: url)
+        guard arguments.count <= 2 else { throw Failure(description: "用 mode 查询，或 mode auto／always-on／push-to-talk 切换。") }
+        if arguments.count == 2 {
+            guard let mode = MicMode(rawValue: arguments[1]) else { throw Failure(description: "模式必须是 auto、always-on 或 push-to-talk。") }
+            settings.mode = mode
+            try saveSettings(settings, to: url)
+            settingsSaved()
+        }
+        printSettings(settings, at: url)
     } else if action == "keymap" {
         let url = configurationURL()
         guard arguments.count <= 2, let data = try? Data(contentsOf: url),
               var settings = try? JSONDecoder().decode(Settings.self, from: data) else {
             throw Failure(description: "先用 configure <序号> 绑定虚拟声卡，再配置 AI 键映射。")
         }
-        if arguments.count == 2, arguments[1] == "test" {
+        if arguments.count == 2, arguments[1] == "status" {
+            printSettings(settings, at: url)
+        } else if arguments.count == 2, arguments[1] == "test" {
             guard let code = settings.aiKeyMap else { throw Failure(description: "当前未配置映射，先用 keymap 捕获。") }
             print("将在 1 秒后按下「\(KeyNames.name(code))」并保持约 2 秒，请先把光标移到任意输入框。")
             Thread.sleep(forTimeInterval: 1)
@@ -364,10 +417,21 @@ do {
             guard am_key_inject(code, 0) == 0 else { throw nativeError() }
             print("已注入一次按下与松开，观察输入法语音输入是否弹出。")
         } else if arguments.count == 2 {
-            guard arguments[1] == "none" else { throw Failure(description: "用 keymap 交互捕获、keymap test 试注入，或 keymap none 清除映射。") }
-            settings.aiKeyMap = nil
+            if arguments[1] == "none" { settings.aiKeyMap = nil }
+            else {
+                #if os(Windows)
+                let validRange: ClosedRange<Int32> = 1...254
+                #else
+                let validRange: ClosedRange<Int32> = 0...127
+                #endif
+                guard let code = Int32(arguments[1]), validRange.contains(code) else {
+                    throw Failure(description: "用 keymap 捕获、keymap <键码> 设置、keymap status 查询、keymap test 试注入，或 keymap none 清除。")
+                }
+                settings.aiKeyMap = code
+            }
             try saveSettings(settings, to: url)
-            print("已清除 AI 键映射。")
+            printSettings(settings, at: url)
+            settingsSaved()
         } else {
             let current = settings.aiKeyMap.map { "\(KeyNames.name($0))（键码 \($0)）" } ?? "未映射"
             print("按住 AI 键开麦的同时按下映射键，用于一并触发输入法的语音输入。\n当前映射：\(current)")
@@ -380,6 +444,7 @@ do {
                 settings.aiKeyMap = code
                 try saveSettings(settings, to: url)
                 print("\n已捕获并保存：\(KeyNames.name(code))（键码 \(code)）\n配置：\(url.path)")
+                settingsSaved()
                 if am_key_ready() != 0 {
                     print("警告：\(String(cString: am_error()))")
                 }
@@ -387,7 +452,7 @@ do {
         }
     } else if action == "run" {
         var duration: Double?
-        var forceAlwaysOn = false
+        var modeOverride: MicMode?
         let background = arguments.contains("--background")
         var index = 1
         while index < arguments.count {
@@ -398,13 +463,14 @@ do {
                 }
                 duration = seconds
                 index += 2
-            case "--always-on":
-                forceAlwaysOn = true
+            case "--always-on", "--push-to-talk":
+                guard modeOverride == nil else { throw Failure(description: "--always-on 与 --push-to-talk 只能选择一个。") }
+                modeOverride = arguments[index] == "--always-on" ? .alwaysOn : .pushToTalk
                 index += 1
             case "--background":
                 index += 1
             default:
-                throw Failure(description: "用 run、run --seconds 60 或 run --seconds 60 --always-on 启动。")
+                throw Failure(description: "用 run [--seconds <秒>] [--always-on|--push-to-talk] 启动。")
             }
         }
         guard am_process_start() == 0 else {
@@ -412,18 +478,20 @@ do {
         }
         if background { logOutput = try ServiceManager.openLog() }
         let settings = try JSONDecoder().decode(Settings.self, from: Data(contentsOf: configurationURL()))
-        run(settings: settings, duration: duration, forceAlwaysOn: forceAlwaysOn)
+        run(settings: settings, duration: duration, modeOverride: modeOverride)
     } else {
         print("""
         AnyKeyMic：USB 键盘麦克风桥接
           devices                列出输出设备
           configure <序号>        绑定虚拟声卡
-          keymap [none|test]     交互捕获 AI 键映射的目标按键；none 清除；test 试注入一次
-          run [--seconds <秒>] [--always-on]    桥接并持续重连；诊断时可强制蓝牙常开麦
+          keymap [status|none|test|键码]    捕获、查询、清除、测试或指定 AI 键映射
+          mode [auto|always-on|push-to-talk]  查询或保存开麦模式
+          run [--seconds <秒>] [--always-on|--push-to-talk]    临时覆盖模式并运行
           install                安装到固定用户目录、注册登录自启并启动
           uninstall              取消登录自启并停止，保留程序、配置与日志
           start | stop | restart 管理后台进程；stop 保留登录自启
           status                 查看安装状态、运行状态与日志路径
+        默认开麦模式：\(MicMode.auto.displayName)。
         配置 keymap 后，按住 AI 键会同时按下映射键（如 fn、右 Ctrl），用于触发输入法的语音输入。运行前退出 AnyKey AI，避免两个程序争用键盘。
         """)
         if !["help", "--help", "-h"].contains(action) { throw Failure(description: "未知命令：\(action)") }

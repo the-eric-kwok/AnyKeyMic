@@ -271,6 +271,74 @@ final class MicSessionTests: XCTestCase {
         XCTAssertFalse(session.needsReconnect)
     }
 
+    func testPushToTalkHandshakeExplicitlyStopsFirmwareAudio() {
+        var session = MicSession(pushToTalk: true)
+        XCTAssertFalse(session.acceptsAudio)
+        _ = session.start(now: 0)
+        _ = session.receive(reply(104), now: 0.1)
+        _ = session.receive(reply(227), now: 0.2)
+        _ = session.tick(now: 0.4)
+        XCTAssertEqual(codes(session.tick(now: 0.6)), [4])
+        XCTAssertTrue(session.isReady)
+        XCTAssertFalse(session.acceptsAudio)
+    }
+
+    func testBothAudioFormatsStayGatedUntilPressedAndAfterRelease() {
+        for (reportID, length) in [(UInt8(0x1b), 62), (UInt8(0x1c), 64)] {
+            var audio = Array(repeating: UInt8(0), count: length)
+            audio[0] = reportID
+            var session = MicSession(pushToTalk: true)
+            _ = session.start(now: 0)
+            _ = session.receive(audio, now: 0.05)
+            XCTAssertFalse(session.acceptsAudio)
+            _ = session.receive(reply(104), now: 0.1)
+            _ = session.receive(reply(227), now: 0.2)
+            _ = session.tick(now: 0.4)
+            _ = session.tick(now: 0.6)
+            _ = session.receive(audio, now: 0.7)
+            XCTAssertFalse(session.acceptsAudio)
+            _ = session.receive(aiKey(0x33), now: 0.8)
+            _ = session.receive(audio, now: 0.9)
+            XCTAssertTrue(session.acceptsAudio)
+            _ = session.receive(aiKey(0x42), now: 1)
+            _ = session.receive(audio, now: 1.1)
+            XCTAssertTrue(session.isReady)
+            XCTAssertFalse(session.acceptsAudio)
+        }
+    }
+
+    func testTypingAndReconnectCloseAudioGate() {
+        var session = MicSession(pushToTalk: true)
+        _ = session.start(now: 0)
+        _ = session.receive(aiKey(0x33), now: 0.05)
+        XCTAssertFalse(session.acceptsAudio)
+        _ = session.receive(reply(104), now: 0.1)
+        _ = session.receive(reply(227), now: 0.2)
+        _ = session.tick(now: 0.4)
+        _ = session.tick(now: 0.6)
+        XCTAssertTrue(session.acceptsAudio)
+        _ = session.receive([0x02, 0x10, 0, 0, 0, 0, 0, 0, 0], now: 0.7)
+        XCTAssertFalse(session.acceptsAudio)
+        _ = session.receive(aiKey(0x33), now: 0.8)
+        XCTAssertTrue(session.acceptsAudio)
+        _ = session.tick(now: 5)
+        XCTAssertTrue(session.needsReconnect)
+        XCTAssertFalse(session.acceptsAudio)
+        _ = session.start(now: 10)
+        XCTAssertFalse(session.micEnabled)
+        XCTAssertFalse(session.acceptsAudio)
+    }
+
+    func testAlwaysOnKeepsAudioGateOpenAcrossAIKeyEdges() {
+        var session = streamingSession()
+        XCTAssertTrue(session.acceptsAudio)
+        _ = session.receive(aiKey(0x33), now: 1)
+        XCTAssertTrue(session.acceptsAudio)
+        _ = session.receive(aiKey(0x42), now: 1.1)
+        XCTAssertTrue(session.acceptsAudio)
+        XCTAssertEqual(session.lastTrigger, .aiReleased)
+    }
+
     func testTypingStopsPushToTalkWhenReleaseIsLost() {
         var session = MicSession(pushToTalk: true)
         _ = session.start(now: 0)

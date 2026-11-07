@@ -128,6 +128,11 @@ public struct MicSession: Sendable {
         micEnabled = !pushToTalk
     }
 
+    /// 握手完成且允许收音时才向音频设备输出，暂停时丢弃固件迟到的音频。
+    public var acceptsAudio: Bool {
+        isReady && micEnabled && !needsReconnect && phase == .streaming
+    }
+
     public var debugState: String {
         "phase=\(phase) ready=\(isReady) micEnabled=\(micEnabled) micOn=\(micOn) awaitingVoice=\(awaitingVoice) retries=\(retries) triggerID=\(triggerID) reconnect=\(needsReconnect)"
     }
@@ -210,6 +215,7 @@ public struct MicSession: Sendable {
                 lastVoice = now
                 awaitingVoice = true
             } else {
+                result.append(Command(code: 4))
                 phase = .paused
             }
         } else if phase == .streaming, !audioActive, now - lastVoice >= 2 {

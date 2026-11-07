@@ -8,22 +8,32 @@
 int am_key_ready(void) { return 0; }
 
 int am_key_inject(int keycode, int pressed) {
+    if (keycode <= 0 || keycode >= 0xff) return am_set_error("Invalid Windows virtual-key code.");
     INPUT input;
     memset(&input, 0, sizeof(input));
     input.type = INPUT_KEYBOARD;
     input.ki.wVk = (WORD)keycode;
-    if (!pressed) input.ki.dwFlags = KEYEVENTF_KEYUP;
-    return SendInput(1, &input, sizeof(input)) == 1 ? 0 : am_set_error("SendInput failed");
+    UINT scan = MapVirtualKeyW((UINT)keycode, MAPVK_VK_TO_VSC_EX);
+    input.ki.wScan = (WORD)(scan & 0xff);
+    if ((scan & 0xff00) == 0xe000) input.ki.dwFlags |= KEYEVENTF_EXTENDEDKEY;
+    if (!pressed) input.ki.dwFlags |= KEYEVENTF_KEYUP;
+    SetLastError(ERROR_SUCCESS);
+    if (SendInput(1, &input, sizeof(input)) == 1) return 0;
+    char message[96];
+    snprintf(message, sizeof(message), "SendInput failed (Windows error %lu).", (unsigned long)GetLastError());
+    return am_set_error(message);
 }
 
 int am_key_capture(int *keycode, int timeout_ms) {
-    if (!keycode) return am_set_error("Invalid capture target");
+    if (!keycode || timeout_ms <= 0) return am_set_error("Invalid capture target or timeout.");
     SHORT previous[256];
     for (int vk = 0; vk < 256; ++vk) previous[vk] = GetAsyncKeyState((int)vk);
     ULONGLONG deadline = GetTickCount64() + (ULONGLONG)timeout_ms;
     for (;;) {
         Sleep(10);
-        for (int vk = 7; vk < 256; ++vk) {
+        for (int vk = 7; vk < 0xff; ++vk) {
+            /* 通用修饰键同时响应左右两侧，会抢先遮蔽 VK_RCONTROL 等实际键码。 */
+            if (vk == VK_SHIFT || vk == VK_CONTROL || vk == VK_MENU) continue;
             SHORT state = GetAsyncKeyState(vk);
             if ((state & 0x8000) && !(previous[vk] & 0x8000)) {
                 *keycode = vk;
